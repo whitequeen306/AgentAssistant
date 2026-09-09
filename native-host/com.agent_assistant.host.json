@@ -1,0 +1,1 @@
+{"path":"C:\\Users\\hp\\Desktop\\AgentAssistant\\native-host\\agent_assistant_host.bat","description":"AgentAssistant native messaging host","name":"com.agent_assistant.host","allowed_origins":["chrome-extension://opchopnajhekcenijaihgbdkibbalkgm/"],"type":"stdio"}

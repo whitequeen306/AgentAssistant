@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment & secrets
+.env
+.venv/
+venv/
+
+# IDE / tooling
+.idea/
+.vscode/
+*.swp
+.codegraph/
+.specstory/
+.superpowers/
+.pytest_cache/
+.ruff_cache/
+.cursorindexingignore
+
+# Node / frontend
+node_modules/
+frontend/node_modules/
+frontend/shots/
+frontend/e2e/REPORT.md
+frontend/tsconfig.tsbuildinfo
+frontend/tsconfig.node.tsbuildinfo
+frontend/vite.config.d.ts
+
+# Built frontend bundle is COMMITTED on purpose (src/agent_assistant/ui/web/)
+# so a fresh clone runs without Node. Keep it tracked.
+
+# Local models / artifacts / dev scratch
+models/
+artifacts/
+scratch/
+shots/
+packaging/*.zip
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Project data (user-local)
+*.log

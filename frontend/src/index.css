@@ -1,0 +1,531 @@
+@import "tailwindcss";
+
+/* Dark mode keyed off a .dark class on <html> (theme toggle / system). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ═══════════════════════════════════════════════════════════════
+   Liquid Frost — translucent glass card on a transparent desktop shell.
+   Surfaces use frosted blur; text stays on higher-opacity panels.
+   ═══════════════════════════════════════════════════════════════ */
+@theme {
+  /* colors — interactive + brand */
+  --color-primary: #171a23;
+  --color-secondary: #4d5464;
+  --color-tertiary: #7c8496;
+  --color-accent: #007aff;
+  --color-accent-strong: #0066d1;
+  --color-accent-contrast: #ffffff;
+  --color-accent-soft: rgba(0, 122, 255, 0.12);
+  --color-success: #1f9d4d;
+  --color-warning: #b7790a;
+  --color-error: #d32f2f;
+  --color-error-soft: rgba(211, 47, 47, 0.1);
+  --color-overlay: rgba(15, 20, 34, 0.4);
+
+  /* colors — glass surfaces (light); keep opacity high so WebView2 still
+     paints a readable card if backdrop-filter is flaky. */
+  --color-surface: rgba(246, 248, 253, 0.92);
+  --color-surface-elevated: rgba(255, 255, 255, 0.97);
+  --color-surface-sunken: rgba(237, 241, 249, 0.92);
+  --color-border: rgba(255, 255, 255, 0.62);
+  --color-border-strong: rgba(168, 178, 202, 0.48);
+
+  /* chat bubbles — keep readable */
+  --color-bubble-user-bg: #0066d1;
+  --color-bubble-user-text: #ffffff;
+  --color-bubble-assistant-bg: rgba(255, 255, 255, 0.82);
+  --color-bubble-assistant-border: rgba(190, 200, 224, 0.5);
+
+  /* status dots */
+  --color-dot-idle: #8a8a8e;
+  --color-dot-thinking: #b7790a;
+  --color-dot-listening: #1f9d4d;
+
+  /* typography */
+  --font-sans: "Manrope", "Segoe UI Variable Text", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-display: "Sora", "Segoe UI Variable Display", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: "Cascadia Code", Consolas, "JetBrains Mono", monospace;
+
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-base--line-height: 1.55;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+
+  /* radius — slightly softer for glass */
+  --radius-xs: 8px;
+  --radius-sm: 10px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-pill: 9999px;
+
+  /* glass optics */
+  --blur-glass: 24px;
+  --blur-glass-strong: 34px;
+  --shadow-drop: 0 24px 64px rgba(18, 28, 52, 0.16), 0 4px 14px rgba(18, 28, 52, 0.07);
+  --shadow-ambient: 0 2px 10px rgba(18, 28, 52, 0.07), 0 1px 2px rgba(18, 28, 52, 0.05);
+  --shadow-lift: 0 8px 24px rgba(18, 28, 52, 0.12), 0 2px 6px rgba(18, 28, 52, 0.06);
+  --shadow-focus: 0 0 0 3px rgba(0, 122, 255, 0.2);
+  --shadow-glass-inset: inset 0 1px 0 rgba(255, 255, 255, 0.7), inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+
+  /* motion — smooth, slightly springy */
+  --ease-standard: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-morph: cubic-bezier(0.34, 1.3, 0.64, 1);
+  --duration-fast: 0.18s;
+  --duration-normal: 0.28s;
+  --duration-slow: 0.42s;
+}
+
+/* ═══ Dark theme — near-black frost (not gray wash) ═══ */
+.dark {
+  --color-surface: rgba(13, 14, 18, 0.93);
+  --color-surface-elevated: rgba(26, 28, 34, 0.95);
+  --color-surface-sunken: rgba(8, 9, 12, 0.9);
+  --color-border: rgba(255, 255, 255, 0.09);
+  --color-border-strong: rgba(255, 255, 255, 0.17);
+  --color-primary: #f4f5f7;
+  --color-secondary: #b3b8c2;
+  --color-tertiary: #7e8592;
+  --color-accent: #0a84ff;
+  --color-accent-strong: #0a84ff;
+  --color-accent-soft: rgba(10, 132, 255, 0.17);
+  --color-bubble-user-bg: #0a84ff;
+  --color-bubble-assistant-bg: rgba(28, 30, 37, 0.94);
+  --color-bubble-assistant-border: rgba(255, 255, 255, 0.09);
+  --color-success: #30d158;
+  --color-warning: #ffb340;
+  --color-error: #ff453a;
+  --color-error-soft: rgba(255, 69, 58, 0.14);
+  --color-dot-idle: #636366;
+  --color-overlay: rgba(0, 0, 0, 0.55);
+  --shadow-drop: 0 20px 56px rgba(0, 0, 0, 0.6), 0 3px 10px rgba(0, 0, 0, 0.4);
+  --shadow-ambient: 0 2px 10px rgba(0, 0, 0, 0.35);
+  --shadow-lift: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --shadow-glass-inset: inset 0 1px 0 rgba(255, 255, 255, 0.07), inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+}
+
+/* docked-search: paint the same near-black as the pill. WebView2 often shows
+   opaque white in "transparent" corner pixels; Win32 SetWindowRgn then cuts
+   the true capsule so these pixels never appear as white boxes. */
+html[data-window-state="docked-search"],
+html[data-window-state="docked-search"] body,
+html[data-window-state="docked-search"] #root {
+  background: #0c0c0e !important;
+}
+
+/* ═══ Base ═══ */
+*,
+::before,
+::after {
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+  background: transparent;
+}
+
+body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: 1.5;
+  color: var(--color-primary);
+  overflow: hidden;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  height: 100%;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+input,
+textarea,
+select {
+  font-family: inherit;
+  user-select: text;
+}
+
+.md,
+[data-selectable] {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: 3px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .interactive-morph:hover,
+  .interactive-morph:hover .morph-label {
+    transform: none !important;
+    letter-spacing: inherit !important;
+  }
+}
+
+/* ═══ Liquid glass panels ═══ */
+.glass-panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-drop), var(--shadow-glass-inset);
+  -webkit-backdrop-filter: blur(var(--blur-glass)) saturate(1.35);
+  backdrop-filter: blur(var(--blur-glass)) saturate(1.35);
+}
+
+.glass-panel-strong {
+  background: var(--color-surface-elevated);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-drop), var(--shadow-glass-inset);
+  -webkit-backdrop-filter: blur(var(--blur-glass-strong)) saturate(1.4);
+  backdrop-filter: blur(var(--blur-glass-strong)) saturate(1.4);
+}
+
+.glass-sidebar {
+  background: color-mix(in srgb, var(--color-surface) 80%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(1.25);
+  backdrop-filter: blur(18px) saturate(1.25);
+}
+
+/* Static elevation on hover (no transition — motion lives elsewhere). */
+.lift:hover {
+  box-shadow: var(--shadow-lift);
+  border-color: var(--color-border-strong);
+}
+
+/* User bubble: subtle derived gradient that follows the custom accent. */
+.bubble-user {
+  background: linear-gradient(
+    150deg,
+    color-mix(in srgb, var(--color-bubble-user-bg) 100%, transparent) 0%,
+    color-mix(in srgb, var(--color-bubble-user-bg) 86%, #7ab8ff) 100%
+  );
+}
+
+/* Brand mark (About page / logo tile). */
+.brand-mark {
+  background: linear-gradient(
+    140deg,
+    var(--color-accent) 0%,
+    color-mix(in srgb, var(--color-accent) 70%, #9a5cff) 100%
+  );
+}
+
+/* ═══ Hover morph — clickable regions / labels deform softly ═══ */
+.interactive-morph {
+  transition:
+    transform var(--duration-normal) var(--ease-morph),
+    background-color var(--duration-fast) var(--ease-standard),
+    border-color var(--duration-fast) var(--ease-standard),
+    border-radius var(--duration-normal) var(--ease-morph),
+    box-shadow var(--duration-normal) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard),
+    letter-spacing var(--duration-normal) var(--ease-morph);
+  will-change: transform;
+}
+
+.interactive-morph:hover {
+  transform: scale(1.035);
+  border-radius: calc(var(--radius-md) + 2px);
+  background: var(--color-surface-elevated);
+  box-shadow: var(--shadow-ambient), var(--shadow-glass-inset);
+}
+
+.interactive-morph:active {
+  transform: scale(0.98);
+  transition-duration: var(--duration-fast);
+}
+
+.interactive-morph:hover .morph-label {
+  letter-spacing: 0.04em;
+  transform: translateY(-0.5px);
+}
+
+.morph-label {
+  display: inline-block;
+  transition:
+    letter-spacing var(--duration-normal) var(--ease-morph),
+    transform var(--duration-normal) var(--ease-morph);
+}
+
+.interactive-morph-nav {
+  transition:
+    transform var(--duration-normal) var(--ease-morph),
+    background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard),
+    border-radius var(--duration-normal) var(--ease-morph),
+    box-shadow var(--duration-normal) var(--ease-standard);
+}
+
+.interactive-morph-nav:hover {
+  transform: scale(1.06);
+  border-radius: var(--radius-lg);
+}
+
+.interactive-morph-nav:hover .morph-label {
+  letter-spacing: 0.06em;
+}
+
+.interactive-morph-nav:active {
+  transform: scale(0.96);
+}
+
+/* ═══ Keyframes ═══ */
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.78);
+  }
+}
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+/* Running-step shimmer: a gloss sweep across the text (Cursor-style).
+   Base color comes from the inherited `color`; -webkit-text-fill-color is
+   what makes the gradient visible (currentColor is unaffected by it). */
+@keyframes shine-slide {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+.text-shine {
+  background-image: linear-gradient(
+    100deg,
+    currentColor 40%,
+    color-mix(in srgb, currentColor 30%, #ffffff) 50%,
+    currentColor 60%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shine-slide 1.8s linear infinite;
+}
+@keyframes msg-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes mic-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.05);
+  }
+}
+@keyframes blink-cursor {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+@keyframes glass-shimmer {
+  0% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: 100% 50%;
+  }
+}
+
+/* ═══ Markdown ═══ */
+.md {
+  font-size: var(--text-base);
+  line-height: 1.6;
+  word-break: break-word;
+}
+.md h1,
+.md h2,
+.md h3,
+.md h4 {
+  font-family: var(--font-display);
+  line-height: 1.25;
+  margin: 0.75rem 0 0.35rem;
+  font-weight: 600;
+}
+.md h1 {
+  font-size: 1.25em;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--color-border-strong);
+}
+.md h2 {
+  font-size: 1.15em;
+}
+.md h3 {
+  font-size: 1.05em;
+}
+.md h1:first-child,
+.md h2:first-child,
+.md h3:first-child {
+  margin-top: 0;
+}
+.md p {
+  margin: 0.35rem 0;
+}
+.md ul,
+.md ol {
+  margin: 0.35rem 0;
+  padding-left: 1.35rem;
+}
+.md li {
+  margin: 0.15rem 0;
+}
+.md li::marker {
+  color: var(--color-tertiary);
+}
+.md ul {
+  list-style: disc;
+}
+.md ol {
+  list-style: decimal;
+}
+.md code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border-strong);
+  padding: 0.5px 5px;
+  border-radius: 5px;
+}
+.md pre {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border-strong);
+  padding: 0.6rem 0.8rem;
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  margin: 0.4rem 0;
+  line-height: 1.55;
+}
+.md pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+.md table {
+  border-collapse: separate;
+  border-spacing: 0;
+  margin: 0.5rem 0;
+  font-size: var(--text-sm);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+}
+.md th,
+.md td {
+  border-bottom: 1px solid var(--color-border-strong);
+  padding: 4px 10px;
+  text-align: left;
+}
+.md tr:last-child td {
+  border-bottom: none;
+}
+.md th {
+  background: var(--color-surface-sunken);
+  font-weight: 600;
+}
+.md blockquote {
+  border-left: 3px solid var(--color-accent);
+  background: var(--color-accent-soft);
+  border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
+  padding: 0.3rem 0.7rem;
+  color: var(--color-secondary);
+  margin: 0.4rem 0;
+}
+.md a {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.md hr {
+  border: none;
+  border-top: 1px solid var(--color-border-strong);
+  margin: 0.75rem 0;
+}

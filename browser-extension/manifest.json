@@ -1,0 +1,8 @@
+{
+    "manifest_version": 3,
+    "name": "AgentAssistant",
+    "version": "0.1.0",
+    "description": "右键选中文字，交给 AgentAssistant 桌面助手处理。",
+    "permissions": ["contextMenus", "nativeMessaging"],
+    "background": { "service_worker": "background.js" }
+}
