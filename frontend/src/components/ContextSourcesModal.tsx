@@ -1,13 +1,72 @@
 import { useEffect, useState } from "react";
-import { BookOpen, Database, FileText, FolderOpen } from "lucide-react";
+import {
+  BookOpen,
+  Check,
+  Database,
+  FileText,
+  FolderOpen,
+  NotebookPen,
+  X,
+} from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { getApi } from "@/lib/bridge";
 import { listNotes } from "@/lib/library";
 import { cn } from "@/lib/cn";
 import type { ContextAttachment, Note, ResearchSource } from "@/types";
 
 type Step = "main" | "notes";
+
+/** A selectable source card in the study-hub visual language:
+ *  icon tile + title/hint + check indicator, lift on hover. */
+function SourceCard({
+  icon: Icon,
+  title,
+  hint,
+  selected,
+  disabled,
+  onClick,
+}: {
+  icon: typeof BookOpen;
+  title: string;
+  hint: string;
+  selected: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        "lift flex w-full items-center gap-3 rounded-md border px-3 py-2.5 text-left disabled:opacity-50",
+        selected
+          ? "border-accent/60 bg-accent-soft"
+          : "border-border bg-surface-elevated hover:bg-surface-sunken",
+      )}
+    >
+      <span
+        className={cn(
+          "flex h-8 w-8 shrink-0 items-center justify-center rounded-md",
+          selected ? "bg-accent text-white" : "bg-accent-soft text-accent-strong",
+        )}
+      >
+        <Icon className="h-4 w-4" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-md font-medium text-primary">{title}</span>
+        <span className="block truncate text-xs text-tertiary">{hint}</span>
+      </span>
+      {selected && (
+        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-pill bg-accent text-white">
+          <Check className="h-3 w-3" />
+        </span>
+      )}
+    </button>
+  );
+}
 
 export function ContextSourcesModal({
   open,
@@ -101,14 +160,9 @@ export function ContextSourcesModal({
   };
 
   const selectKnowledge = () => {
-    setPrimary("knowledge");
+    setPrimary((p) => (p === "knowledge" ? "none" : "knowledge"));
     setSelectedNotes(new Set());
     setStep("main");
-  };
-
-  const selectNone = () => {
-    setPrimary("none");
-    setSelectedNotes(new Set());
   };
 
   const removeFile = (idx: number) => {
@@ -122,102 +176,68 @@ export function ContextSourcesModal({
       title={step === "main" ? "对话资料来源" : "选择资料库笔记"}
     >
       {step === "main" && (
-        <div className="flex flex-col gap-3">
-          <p className="text-sm text-secondary">
-            资料库与知识库二选一；本机文件可额外叠加（会弹出系统文件选择框）。
-          </p>
-
+        <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-2">
-            <span className="text-xs font-medium uppercase tracking-wide text-tertiary">
-              主来源
+            <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-tertiary">
+              <span className="h-2.5 w-0.5 rounded-pill bg-accent" />
+              主来源（二选一）
             </span>
-            <button
-              type="button"
+            <SourceCard
+              icon={BookOpen}
+              title="资料库"
+              hint={
+                primary === "notes" && selectedNotes.size
+                  ? `已选 ${selectedNotes.size} 篇笔记`
+                  : "Agent 笔记 · 多选后整篇读取"
+              }
+              selected={primary === "notes"}
               disabled={loading}
               onClick={() => void openNotes()}
-              className={cn(
-                "flex items-center gap-3 rounded-md border px-3 py-3 text-left transition-colors",
-                primary === "notes"
-                  ? "border-accent bg-accent-soft"
-                  : "border-border hover:bg-surface-elevated",
-              )}
-            >
-              <BookOpen className="h-5 w-5 text-accent" />
-              <span>
-                <span className="block text-md font-medium text-primary">资料库</span>
-                <span className="block text-xs text-tertiary">
-                  Agent 笔记 · 列表多选后整篇读取
-                  {primary === "notes" && selectedNotes.size
-                    ? ` · 已选 ${selectedNotes.size}`
-                    : ""}
-                </span>
-              </span>
-            </button>
-            <button
-              type="button"
+            />
+            <SourceCard
+              icon={Database}
+              title="知识库"
+              hint="已入库文件 · 混合检索 + 重排序"
+              selected={primary === "knowledge"}
               disabled={loading}
               onClick={selectKnowledge}
-              className={cn(
-                "flex items-center gap-3 rounded-md border px-3 py-3 text-left transition-colors",
-                primary === "knowledge"
-                  ? "border-accent bg-accent-soft"
-                  : "border-border hover:bg-surface-elevated",
-              )}
-            >
-              <Database className="h-5 w-5 text-accent" />
-              <span>
-                <span className="block text-md font-medium text-primary">知识库</span>
-                <span className="block text-xs text-tertiary">
-                  已入库文件 · 混合检索 + 重排序
-                </span>
-              </span>
-            </button>
-            {primary !== "none" && (
-              <button
-                type="button"
-                onClick={selectNone}
-                className="self-start text-xs text-tertiary underline-offset-2 hover:text-secondary hover:underline"
-              >
-                清除主来源
-              </button>
-            )}
+            />
           </div>
 
           <div className="flex flex-col gap-2">
-            <span className="text-xs font-medium uppercase tracking-wide text-tertiary">
-              额外叠加
+            <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-tertiary">
+              <span className="h-2.5 w-0.5 rounded-pill bg-accent" />
+              额外叠加本机文件
             </span>
-            <button
-              type="button"
+            <SourceCard
+              icon={FolderOpen}
+              title="选择本机文件"
+              hint={
+                files.length
+                  ? `已选 ${files.length} 个文件`
+                  : "txt / md / json / pdf 等，可叠加在主来源上"
+              }
+              selected={false}
               disabled={loading}
               onClick={() => void pickFiles()}
-              className="flex items-center gap-3 rounded-md border border-border px-3 py-3 text-left transition-colors hover:bg-surface-elevated"
-            >
-              <FolderOpen className="h-5 w-5 text-accent" />
-              <span>
-                <span className="block text-md font-medium text-primary">本机文件</span>
-                <span className="block text-xs text-tertiary">
-                  点击后选择本地 txt / md / json 等
-                  {files.length ? ` · 已选 ${files.length}` : ""}
-                </span>
-              </span>
-            </button>
+            />
             {files.length > 0 && (
-              <ul className="flex max-h-[20vh] flex-col gap-1 overflow-y-auto">
+              <ul className="flex flex-wrap gap-1.5">
                 {files.map((f, i) => (
                   <li
                     key={`${f.path}:${i}`}
-                    className="flex items-center justify-between gap-2 rounded-sm bg-surface-sunken px-2 py-1.5 text-xs text-secondary"
+                    className="inline-flex max-w-full items-center gap-1 rounded-pill border border-border bg-surface-sunken py-0.5 pl-2.5 pr-1 text-xs text-secondary"
                   >
                     <span className="truncate" title={f.path}>
                       {f.title || f.path}
                     </span>
                     <button
                       type="button"
-                      className="shrink-0 text-tertiary hover:text-primary"
+                      aria-label="移除"
+                      className="shrink-0 rounded-pill p-0.5 text-tertiary hover:bg-surface-elevated hover:text-error"
                       onClick={() => removeFile(i)}
                     >
-                      移除
+                      <X className="h-3 w-3" />
                     </button>
                   </li>
                 ))}
@@ -225,7 +245,7 @@ export function ContextSourcesModal({
             )}
           </div>
 
-          <div className="flex justify-end gap-2">
+          <div className="flex justify-end gap-2 border-t border-border pt-3">
             <Button variant="ghost" onClick={() => onOpenChange(false)}>
               取消
             </Button>
@@ -237,9 +257,13 @@ export function ContextSourcesModal({
       {step === "notes" && (
         <div className="flex flex-col gap-3">
           {notes.length === 0 ? (
-            <p className="py-6 text-center text-sm text-tertiary">资料库还没有笔记</p>
+            <EmptyState
+              icon={NotebookPen}
+              title="资料库还没有笔记"
+              hint="让助手「保存为笔记」或在学习库手动添加后，这里就能选它作为对话资料。"
+            />
           ) : (
-            <ul className="flex max-h-[40vh] flex-col gap-1 overflow-y-auto">
+            <ul className="flex max-h-[40vh] flex-col gap-1.5 overflow-y-auto pr-0.5">
               {notes.map((n) => {
                 const on = selectedNotes.has(n.filename);
                 return (
@@ -248,21 +272,30 @@ export function ContextSourcesModal({
                       type="button"
                       onClick={() => toggleNote(n.filename)}
                       className={cn(
-                        "flex w-full items-center gap-2 rounded-sm px-2 py-2 text-left text-sm transition-colors",
+                        "flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left text-sm",
                         on
-                          ? "bg-accent-soft text-accent-strong"
-                          : "hover:bg-surface-elevated text-primary",
+                          ? "border-accent/60 bg-accent-soft text-accent-strong"
+                          : "border-border bg-surface-elevated text-primary hover:bg-surface-sunken",
                       )}
                     >
-                      <FileText className="h-4 w-4 shrink-0" />
-                      <span className="truncate">{n.title || n.filename}</span>
+                      <span
+                        className={cn(
+                          "flex h-7 w-7 shrink-0 items-center justify-center rounded-md",
+                          on ? "bg-accent text-white" : "bg-accent-soft text-accent-strong",
+                        )}
+                      >
+                        {on ? <Check className="h-3.5 w-3.5" /> : <FileText className="h-3.5 w-3.5" />}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate">
+                        {n.title || n.filename}
+                      </span>
                     </button>
                   </li>
                 );
               })}
             </ul>
           )}
-          <div className="flex justify-between gap-2">
+          <div className="flex justify-between gap-2 border-t border-border pt-3">
             <Button variant="ghost" onClick={() => setStep("main")}>
               返回
             </Button>

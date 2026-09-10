@@ -240,10 +240,10 @@ export function ChatInput({
             onClick={() => setPickerOpen(true)}
             title="资料来源：资料库 / 知识库 / 本机文件"
             className={cn(
-              "interactive-morph inline-flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-pill border border-border",
+              "interactive-morph inline-flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-pill border",
               hasAttachment(attachment)
-                ? "bg-accent-soft text-accent-strong"
-                : "bg-surface text-secondary hover:text-primary",
+                ? "border-accent/50 bg-accent-soft text-accent-strong"
+                : "border-border bg-transparent text-secondary hover:bg-surface-elevated hover:text-primary",
             )}
           >
             <Paperclip className="h-[18px] w-[18px]" />
@@ -254,10 +254,10 @@ export function ChatInput({
           onClick={togglePttHandler}
           title="点击录音，再点结束"
           className={cn(
-            "interactive-morph inline-flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-pill border border-border",
+            "interactive-morph inline-flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-pill border",
             dictating
               ? "border-transparent bg-accent-strong text-accent-contrast animate-[mic-pulse_1.4s_ease-in-out_infinite]"
-              : "bg-surface text-secondary hover:text-primary",
+              : "border-border bg-transparent text-secondary hover:bg-surface-elevated hover:text-primary",
           )}
         >
           <Mic className="h-[18px] w-[18px]" />
