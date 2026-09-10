@@ -270,12 +270,14 @@ class ApiBridge:
             DOCKED_SEARCH_HEIGHT,
             DRAG_MAX,
             DRAG_SETTLE,
-            STATE_SIZES,
+            ui_window,
         )
         return {
             "maxDrag": DRAG_MAX,
             "settleThreshold": DRAG_SETTLE,
-            "mainHeight": STATE_SIZES["main"][1],
+            # Screen-relative main height (matches state_size), not a constant —
+            # the drag-grow animation must land on the real main height.
+            "mainHeight": ui_window.state_size("main")[1],
             "dockedHeight": DOCKED_SEARCH_HEIGHT,
         }
 

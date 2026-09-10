@@ -95,6 +95,10 @@ def test_init_data_includes_subagents(bridge, manager, monkeypatch, tmp_path) ->
     class FakeWindow:
         current_state = "main"
 
+        @staticmethod
+        def state_size(state: str):
+            return (1200, 800) if state == "main" else (420, 48)
+
     monkeypatch.setattr("agent_assistant.ui.window.ui_window", FakeWindow())
     data = bridge.get_init_data()
     assert "subagents" in data

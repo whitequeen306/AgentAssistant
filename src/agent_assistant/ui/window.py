@@ -55,15 +55,22 @@ RESTORE_THRESHOLD = 60
 DRAG_MAX = 200          # px of downward drag to fully grow search bar → main
 DRAG_SETTLE = 100       # px threshold: drag past this → settle to main, else snap back
 
-# Fixed window sizes per state; docked-search stays a narrow pill — main is
-# independently wider so the chat column (after a ~240px sidebar) stays readable.
+# Window sizes per state. docked-search stays a narrow pill. Main is
+# SCREEN-RELATIVE (≈68% × 82% of the work area, clamped) so it always reads
+# like real software — a fixed 980×640 read like a dialog box and felt
+# especially jarring when grown from the search pill.
 STATE_SIZES = {
-    "main": (980, 640),
+    "main": (1200, 800),     # fallback when no screen info is available
     "popup-chat": (480, 560),
 }
 VALID_STATES = frozenset({"main", "docked-search", "popup-chat"})
 # User-draggable main window bounds. Min leaves ~640px for chat after sidebar.
 MAIN_MIN_SIZE = (880, 520)
+# Screen-relative main clamps: the min keeps the window app-like even on
+# small laptops; the max stops ultra-wide monitors from stretching the
+# chat column into unreadable line lengths.
+MAIN_RELATIVE_MIN = (1024, 700)
+MAIN_RELATIVE_MAX = (1560, 960)
 DOCKED_SEARCH_HEIGHT = 48  # just the bar — no in-window gap (transparency is
 # unreliable on some setups, so an in-window rope gap would render white).
 DOCKED_SEARCH_BANNER_HEIGHT = 44  # confirm tip strip under the search pill
@@ -87,15 +94,20 @@ def _clamp_main_size(w: int, h: int, sw: int, sh: int) -> tuple[int, int]:
 def state_size(state: str, screen: tuple[int, int]) -> tuple[int, int]:
     """Pure: compute (w, h) for a state given screen size.
 
-    Main uses a comfortable fixed default (clamped to the screen) — it is
-    intentionally wider than the docked-search pill so tables/chat stay readable.
+    Main is screen-relative (≈68% × 82% of the work area, clamped to
+    MAIN_RELATIVE_MIN/MAX) so initial open AND docked→main growth both read
+    like a full app window on any display.
     """
     sw, sh = screen
     # Legacy morphs → search pill
     if state in ("minimized", "docked-sliver"):
         state = "docked-search"
     if state == "main":
-        dw, dh = STATE_SIZES["main"]
+        if sw > 0 and sh > 0:
+            dw = max(MAIN_RELATIVE_MIN[0], min(MAIN_RELATIVE_MAX[0], int(sw * 0.68)))
+            dh = max(MAIN_RELATIVE_MIN[1], min(MAIN_RELATIVE_MAX[1], int(sh * 0.82)))
+        else:
+            dw, dh = STATE_SIZES["main"]
         return _clamp_main_size(dw, dh, sw, sh)
     if state == "docked-search":
         return (min(DOCKED_SEARCH_BAR_WIDTH, int(sw * DOCKED_SEARCH_WIDTH_RATIO)), DOCKED_SEARCH_HEIGHT)

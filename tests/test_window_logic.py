@@ -16,8 +16,17 @@ from agent_assistant.ui.window import (
 # ─── state_size ────────────────────────────────────────────────
 
 def test_state_size_main():
-    # Main is a comfortable fixed default (not tied to the narrow search pill).
-    assert state_size("main", (1920, 1080)) == (980, 640)
+    # Main is screen-relative (≈68% × 82% of the work area) so it reads like
+    # real software — the old fixed 980×640 felt like a dialog box.
+    assert state_size("main", (1920, 1080)) == (1305, 885)
+
+
+def test_state_size_main_clamped_and_floored():
+    # Ultra-wide monitors cap out; small laptops get the app-like floor.
+    w, h = state_size("main", (2560, 1440))
+    assert (w, h) == (1560, 960)
+    w, h = state_size("main", (1366, 768))
+    assert (w, h) == (1024, 700)
 
 
 def test_state_size_main_clamps_to_small_screen():
