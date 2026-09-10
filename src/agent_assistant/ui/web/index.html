@@ -4,12 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AgentAssistant</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Sora:wght@500;600;700&display=swap"
-      rel="stylesheet"
-    />
+    <!-- Fonts: NO external font CDN here. fonts.googleapis.com is
+         unreachable on many (CN) networks and its render-blocking stylesheet
+         stalled first paint by ~3s and interactivity by ~18s. The font stacks
+         in index.css fall back to Segoe UI Variable / system-ui. -->
     <script type="module" crossorigin>var yg=e=>{throw TypeError(e)};var xg=(e,t,n)=>t.has(e)||yg("Cannot "+n);var dt=(e,t,n)=>(xg(e,t,"read from private field"),n?n.call(e):t.get(e)),vg=(e,t,n)=>t.has(e)?yg("Cannot add the same private member more than once"):t instanceof WeakSet?t.add(e):t.set(e,n),Hc=(e,t,n,r)=>(xg(e,t,"write to private field"),r?r.call(e,n):t.set(e,n),n);function NS(e,t){for(var n=0;n<t.length;n++){const r=t[n];if(typeof r!="string"&&!Array.isArray(r)){for(const i in r)if(i!=="default"&&!(i in e)){const o=Object.getOwnPropertyDescriptor(r,i);o&&Object.defineProperty(e,i,o.get?o:{enumerable:!0,get:()=>r[i]})}}}return Object.freeze(Object.defineProperty(e,Symbol.toStringTag,{value:"Module"}))}(function(){const t=document.createElement("link").relList;if(t&&t.supports&&t.supports("modulepreload"))return;for(const i of document.querySelectorAll('link[rel="modulepreload"]'))r(i);new MutationObserver(i=>{for(const o of i)if(o.type==="childList")for(const s of o.addedNodes)s.tagName==="LINK"&&s.rel==="modulepreload"&&r(s)}).observe(document,{childList:!0,subtree:!0});function n(i){const o={};return i.integrity&&(o.integrity=i.integrity),i.referrerPolicy&&(o.referrerPolicy=i.referrerPolicy),i.crossOrigin==="use-credentials"?o.credentials="include":i.crossOrigin==="anonymous"?o.credentials="omit":o.credentials="same-origin",o}function r(i){if(i.ep)return;i.ep=!0;const o=n(i);fetch(i.href,o)}})();var lu=typeof globalThis<"u"?globalThis:typeof window<"u"?window:typeof global<"u"?global:typeof self<"u"?self:{};function Wp(e){return e&&e.__esModule&&Object.prototype.hasOwnProperty.call(e,"default")?e.default:e}var Mv={exports:{}},Qu={},Av={exports:{}},se={};/**
  * @license React
  * react.production.min.js

@@ -15,6 +15,7 @@ import ctypes
 import logging
 import os
 import sys
+import threading
 from ctypes import wintypes
 from pathlib import Path
 from typing import Callable
@@ -410,6 +411,10 @@ class UIWindow:
             text_select=True,
             transparent=True,           # true window transparency (replaces brittle color-key)
             background_color="#000000",  # pywebview wants a 6-digit hex; ignored under transparent=True
+            # Hidden until the page has fully loaded (see _show_when_loaded):
+            # showing a transparent window before WebView2 paints anything
+            # flashes a WHITE rectangle for seconds — worse on slow networks.
+            hidden=True,
             js_api=api_bridge,
         )
         # transparent=True gives a truly transparent window (no black border).
@@ -417,20 +422,34 @@ class UIWindow:
         # only .glass elements draw a frosted surface.
 
         api_bridge.set_window(self._window)
-        # pywebview winforms may keep a transparent window hidden until shown
-        # explicitly — force-show on the shown event as a workaround.
+        # Show ONLY after the page finished loading — first paint is then the
+        # real UI, never the WebView2 default white surface.
+        self._window.events.loaded += self._show_when_loaded
+        #HWND capture / snap-strip / pill-shape work stays on `shown`.
         self._window.events.shown += self._ensure_visible
+        # Safety net: if `loaded` never fires (broken page), show after 4s so
+        # the app can't end up invisible — a white flash beats a dead app.
+        threading.Timer(4.0, self._show_when_loaded).start()
 
         webview.start(debug=False)
 
-    def _ensure_visible(self, *args) -> None:
-        """Workaround: pywebview winforms may keep a transparent window hidden
-        until shown explicitly. Called on the `shown` event."""
+    _shown_once = False
+
+    def _show_when_loaded(self, *args) -> None:
+        """Deferred display: show the window only once the page is painted."""
+        if self._shown_once:
+            return
+        self._shown_once = True
         try:
             if self._window:
                 self._window.show()
         except Exception:
             pass
+
+    def _ensure_visible(self, *args) -> None:
+        """Post-show work: capture the HWND, strip Aero Snap styles, re-cut the
+        pill region. (The actual show() now happens in _show_when_loaded —
+        showing on `shown` re-introduced the startup white flash.)"""
         # Capture the HWND via PID-based enumeration (deterministic — always
         # the webview, never the console). Cached forever after.
         if self._cached_hwnd is None and sys.platform == "win32":
