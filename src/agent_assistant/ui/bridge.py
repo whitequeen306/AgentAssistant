@@ -989,6 +989,56 @@ class ApiBridge:
         except OSError:
             return {"ok": False, "error": "failed to delete note"}
 
+    def export_note(self, filename: str) -> dict[str, Any]:
+        """Export a library note to a user-chosen location (system save dialog).
+
+        Returns {"ok": True, "path": dest} on success,
+        {"ok": False, "cancelled": True} when the user closes the dialog,
+        {"ok": False, "error": ...} otherwise.
+        """
+        import re as _re
+        import shutil as _shutil
+
+        try:
+            import webview
+
+            from agent_assistant.ui.window import ui_window
+
+            path = self._safe_note_path(filename)
+            if path is None:
+                return {"ok": False, "error": "note not found"}
+            win = ui_window.window
+            if not win:
+                return {"ok": False, "error": "window unavailable"}
+
+            # Suggested filename: strip the timestamp prefix, sanitize for Windows.
+            stem = path.stem
+            title = _re.sub(r"^\d{8}_\d{6}_", "", stem) or stem
+            suggested = _re.sub(r'[\\/:*?"<>|]', "_", title) + ".md"
+
+            dest = win.create_file_dialog(
+                webview.SAVE_DIALOG,
+                directory=str(path.parent),
+                save_filename=suggested,
+                file_types=(
+                    "Markdown files (*.md)",
+                    "Text files (*.txt)",
+                    "All files (*.*)",
+                ),
+            )
+            if isinstance(dest, (list, tuple)):
+                dest = dest[0] if dest else None
+            dest = str(dest).strip() if dest else ""
+            if not dest:
+                return {"ok": False, "cancelled": True}
+            if not dest.lower().endswith((".md", ".txt")):
+                dest += ".md"
+            _shutil.copyfile(path, dest)
+            return {"ok": True, "path": dest}
+        except Exception as e:  # noqa: BLE001 — surfaced to the UI
+            logger.warning("export_note failed: %s", e)
+            return {"ok": False, "error": str(e)}
+
     @staticmethod
     def _safe_note_path(filename: str):
         """Resolve a note filename under notes_dir; None if invalid/missing."""

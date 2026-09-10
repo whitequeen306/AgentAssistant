@@ -9,6 +9,7 @@ Covers:
 
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -257,6 +258,71 @@ class TestInvokeOnFile:
         bridge._consume_pending_file()
         time.sleep(0.2)
         assert len(captured) == 1
+
+
+# ─── export_note (study library → local file) ────────────────────────────────
+
+class TestExportNote:
+    """Notes can be exported to a user-chosen path via a save dialog."""
+
+    def _note(self, tmp_path):
+        src = tmp_path / "notes"
+        src.mkdir()
+        note = src / "20990101_000000_demo.md"
+        note.write_text("---\ntitle: demo\n---\n内容", encoding="utf-8")
+        return note
+
+    def _fake_window(self, monkeypatch, ret):
+        from agent_assistant.ui import window as win_mod
+
+        calls = {}
+
+        class FakeWin:
+            def create_file_dialog(self, dialog_type, **kwargs):
+                calls["type"] = dialog_type
+                calls["kwargs"] = kwargs
+                return ret
+
+        monkeypatch.setattr(win_mod, "ui_window", type("W", (), {"window": FakeWin()}))
+        return calls
+
+    def test_exports_copy_to_chosen_path(self, bridge, tmp_path, monkeypatch):
+        from agent_assistant.ui.bridge import ApiBridge
+
+        note = self._note(tmp_path)
+        monkeypatch.setattr(
+            ApiBridge, "_safe_note_path", staticmethod(lambda fn: note if fn == note.name else None)
+        )
+        dest = tmp_path / "out" / "demo.md"
+        dest.parent.mkdir()
+        calls = self._fake_window(monkeypatch, str(dest))
+
+        res = bridge.export_note(note.name)
+        assert res["ok"] is True
+        assert Path(res["path"]) == dest
+        assert dest.read_text(encoding="utf-8") == note.read_text(encoding="utf-8")
+        # suggested filename strips the timestamp prefix
+        assert calls["kwargs"]["save_filename"] == "demo.md"
+
+    def test_user_cancel_returns_cancelled(self, bridge, tmp_path, monkeypatch):
+        from agent_assistant.ui.bridge import ApiBridge
+
+        note = self._note(tmp_path)
+        monkeypatch.setattr(
+            ApiBridge, "_safe_note_path", staticmethod(lambda fn: note)
+        )
+        self._fake_window(monkeypatch, None)
+        res = bridge.export_note(note.name)
+        assert res == {"ok": False, "cancelled": True}
+
+    def test_missing_note_errors(self, bridge, monkeypatch):
+        from agent_assistant.ui.bridge import ApiBridge
+
+        monkeypatch.setattr(
+            ApiBridge, "_safe_note_path", staticmethod(lambda fn: None)
+        )
+        res = bridge.export_note("ghost.md")
+        assert res["ok"] is False and "error" in res
 
 
 # ─── invoke_on_text (bridge layer — browser extension path) ──────────────────

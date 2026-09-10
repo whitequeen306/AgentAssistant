@@ -350,6 +350,10 @@ export interface AgentApi {
     title?: string,
   ): Promise<{ ok: boolean; error?: string; filename?: string }>;
   delete_note(filename: string): Promise<{ ok: boolean; error?: string }>;
+  /** 学习库：把笔记导出到用户选择的本机位置（系统另存为对话框）。 */
+  export_note(
+    filename: string,
+  ): Promise<{ ok: boolean; cancelled?: boolean; path?: string; error?: string }>;
   /** 学习库：前端直接存笔记（调研卡片「存入资料库」按钮）。 */
   save_note_file(
     title: string,

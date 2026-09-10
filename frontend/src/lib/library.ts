@@ -32,3 +32,12 @@ export async function deleteNote(
   if (!api) return { ok: false, error: "bridge unavailable" };
   return api.delete_note(filename);
 }
+
+/** 导出笔记到本机（系统另存为对话框）；用户取消时 ok=false + cancelled。 */
+export async function exportNote(
+  filename: string,
+): Promise<{ ok: boolean; cancelled?: boolean; path?: string; error?: string }> {
+  const api = getApi();
+  if (!api) return { ok: false, error: "bridge unavailable" };
+  return api.export_note(filename);
+}
