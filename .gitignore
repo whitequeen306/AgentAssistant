@@ -53,7 +53,8 @@ try-fresh.bat
 
 # Deployment infrastructure (server IP/topology — stays local, never push)
 DEVELOP.md
-scripts/
+scripts/deploy_site.py
+scripts/remote_*.sh
 docs/deploy/
 
 # OS
