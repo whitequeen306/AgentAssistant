@@ -44,7 +44,8 @@ class TestRecordAndFetch:
         assert rec["tool"] == "read_page"
         assert rec["ok"] is True
         assert rec["result"]["data"]["content"] == "payload for call_a1"
-        assert rec["conversation_id"] == "conv1"
+        assert rec["session_id"] == "conv1"
+        assert rec["id"].startswith("T-")
         assert "ts" in rec and "T" in rec["ts"]
 
     def test_conversation_isolation(self, archive: ToolArchive):
@@ -119,7 +120,7 @@ class TestRotationAndRetention:
                 conversation_id="c", call_id=f"call_{i}", tool="t",
                 arguments="{}", result={"ok": True, "i": i},
             )
-        files = list((tmp_path / "ta").glob("c*.jsonl"))
+        files = list((tmp_path / "ta" / "c").glob("tool_details*.jsonl"))
         assert len(files) >= 2  # rotated at least once
         # every record still retrievable across rotated files
         rec = archive.get("c", "call_0")
@@ -132,7 +133,7 @@ class TestRotationAndRetention:
             conversation_id="old", call_id="call_old", tool="t",
             arguments="{}", result={"ok": True},
         )
-        old_file = next((tmp_path / "ta").glob("old*.jsonl"))
+        old_file = next((tmp_path / "ta" / "old").glob("tool_details*.jsonl"))
         expired = time.time() - 8 * 86400
         os.utime(old_file, (expired, expired))
         archive._last_cleanup = 0.0  # force cleanup on next write
@@ -312,6 +313,9 @@ class TestLoopIntegration:
             def build_profile_additions(self) -> str:
                 return ""
 
+            def build_study_profile_section(self) -> str:
+                return ""
+
         monkeypatch.setattr(
             "agent_assistant.agent.loop.memory_service", FakeMemoryService()
         )
@@ -320,7 +324,6 @@ class TestLoopIntegration:
             memory_manager=MemoryManager(
                 token_budget=100_000,
                 summary_cap=1200,
-                soft_rounds=4,
                 summarizer=lambda t: "s",
             )
         )

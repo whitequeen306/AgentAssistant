@@ -431,6 +431,16 @@ class UIWindow:
         # the app can't end up invisible — a white flash beats a dead app.
         threading.Timer(4.0, self._show_when_loaded).start()
 
+        # 调试/自动化开关：AGENT_REMOTE_DEBUG_PORT=9222 时开启 CDP，
+        # 供 Playwright 直连 WebView2 截图与导航（不影响正常启动）。
+        import os as _os
+
+        _dbg_port = _os.environ.get("AGENT_REMOTE_DEBUG_PORT", "").strip()
+        if _dbg_port.isdigit():
+            import webview as _webview
+
+            _webview.settings["REMOTE_DEBUGGING_PORT"] = int(_dbg_port)
+
         webview.start(debug=False)
 
     _shown_once = False

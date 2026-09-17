@@ -1,11 +1,10 @@
 import { useEffect, useState } from "react";
-import { Info } from "lucide-react";
-import { Button } from "@/components/ui";
+import { Eye, EyeOff, Info, Loader2, RefreshCw } from "lucide-react";
+import { Button, Input } from "@/components/ui";
 import { DockMinimizeButton } from "@/components/DockMinimizeButton";
 import { PageHeader } from "@/components/PageHeader";
 import { Toggle } from "@/components/ui/Toggle";
 import { Select } from "@/components/ui/Select";
-import { Input } from "@/components/ui";
 import { cn } from "@/lib/cn";
 import { actions, useStore } from "@/lib/store";
 import { getApi } from "@/lib/bridge";
@@ -20,6 +19,7 @@ interface Item {
   options?: string[];
   labels?: string[];
   hint?: string;
+  placeholder?: string;
 }
 interface Group {
   group: string;
@@ -54,39 +54,8 @@ const SCHEMA: Group[] = [
     ],
   },
   {
-    group: "语音",
-    items: [
-      { key: "feature_voice_ptt", label: "语音输入（PTT）", type: "toggle" },
-      { key: "voice_autosend", label: "识别后自动发送", type: "toggle" },
-      { key: "ptt_hotkey", label: "PTT 快捷键", type: "text", hint: "重启后生效" },
-      { key: "feature_tts", label: "语音播报（TTS）", type: "toggle" },
-    ],
-  },
-  {
     group: "功能开关",
-    items: [
-      { key: "feature_right_click", label: "右键快捷菜单", type: "toggle" },
-      { key: "feature_briefing", label: "定时简报", type: "toggle" },
-      { key: "feature_perf_monitor", label: "性能监控", type: "toggle" },
-      { key: "feature_research", label: "深度研究", type: "toggle" },
-    ],
-  },
-  {
-    group: "定时简报",
-    items: [
-      {
-        key: "briefing_window_start",
-        label: "触发时间窗（开始）",
-        type: "text",
-        hint: "格式 HH:MM，如 06:30；只在时间窗内触发，窗口外打开应用不会突然播报。重启后生效",
-      },
-      {
-        key: "briefing_window_end",
-        label: "触发时间窗（结束）",
-        type: "text",
-        hint: "格式 HH:MM，如 11:30。内容是新术语 + 热门 GitHub 项目，不是新闻大事记。生成在独立「晨间播报」会话，不占用当前聊天",
-      },
-    ],
+    items: [{ key: "feature_right_click", label: "右键快捷菜单", type: "toggle" }],
   },
   {
     group: "安全",
@@ -96,22 +65,6 @@ const SCHEMA: Group[] = [
         label: "文件操作工作区",
         type: "text",
         hint: "分号分隔多个目录；留空 = 默认（桌面/文档/下载/图片/音乐/视频 + 数据目录）；填 off 关闭围栏。围栏外的文件操作会先询问",
-      },
-    ],
-  },
-  {
-    group: "模型（Provider）",
-    items: [
-      { key: "deepseek_api_key", label: "API Key", type: "password", hint: "保存后立即生效" },
-      { key: "deepseek_base_url", label: "Base URL", type: "text" },
-      { key: "deepseek_model", label: "模型名称", type: "text" },
-      {
-        key: "reasoning_effort",
-        label: "思考强度",
-        type: "select",
-        options: ["off", "low", "high", "max"],
-        labels: ["关闭", "低", "高", "最高"],
-        hint: "越低越快、越省额度。当前默认是「低」。保存后立即生效，无需重启",
       },
     ],
   },
@@ -166,6 +119,7 @@ export function SettingsPage() {
               </div>
             </div>
           ))}
+          <ProviderSection />
           <ToolPermissionSection />
           <div className="flex justify-center border-t border-border pt-4 pb-1">
             <Button variant="ghost" onClick={() => actions.setPage("about")}>
@@ -176,6 +130,150 @@ export function SettingsPage() {
         </div>
       </div>
     </section>
+  );
+}
+
+/* ─── 模型（Provider）：Key 密文+小眼睛 / URL 明文 / 拉取模型下拉 ─── */
+
+function ProviderSection() {
+  const settings = useStore((s) => s.settings);
+  const [showKey, setShowKey] = useState(false);
+  const [models, setModels] = useState<string[]>([]);
+  const [fetching, setFetching] = useState(false);
+  const [fetchError, setFetchError] = useState("");
+
+  const save = (key: string, value: string) => {
+    actions.setSetting(key, value);
+    getApi()?.save_setting(key, value).catch(() => {});
+  };
+
+  const storedKey = settings.deepseek_api_key || "";
+  const storedUrl = settings.deepseek_base_url || "";
+
+  const fetchModels = async () => {
+    setFetching(true);
+    setFetchError("");
+    try {
+      const res = await getApi()?.fetch_provider_models?.(storedKey, storedUrl);
+      if (res?.ok && res.models?.length) {
+        setModels(res.models);
+      } else {
+        setFetchError(res?.error || "未拉取到模型");
+      }
+    } finally {
+      setFetching(false);
+    }
+  };
+
+  return (
+    <div>
+      <h4 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-tertiary">
+        <span className="h-2.5 w-0.5 rounded-pill bg-accent" />
+        模型（Provider）
+      </h4>
+      <div className="flex flex-col overflow-hidden rounded-lg border border-border bg-surface-elevated">
+        {/* API Key：密文 + 小眼睛 */}
+        <div className="flex items-center justify-between gap-3 px-3.5 py-2.5">
+          <span className="text-base text-primary">API Key</span>
+          <div className="flex items-center gap-1">
+            <Input
+              type={showKey ? "text" : "password"}
+              value={storedKey}
+              placeholder={storedKey ? "" : "未配置（可在 .env 配置）"}
+              onChange={(e) => {
+                const v = e.target.value.trim();
+                if (v) save("deepseek_api_key", v);
+              }}
+              className="w-48"
+            />
+            <button
+              type="button"
+              onClick={() => setShowKey((v) => !v)}
+              disabled={!storedKey}
+              aria-label={showKey ? "隐藏 Key" : "显示 Key"}
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-tertiary hover:bg-surface-elevated hover:text-primary disabled:opacity-40"
+            >
+              {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </div>
+        </div>
+        {/* Base URL：明文 */}
+        <div className="flex items-center justify-between gap-3 border-t border-border px-3.5 py-2.5">
+          <span className="text-base text-primary">Base URL</span>
+          <Input
+            type="text"
+            value={storedUrl}
+            placeholder="https://api.deepseek.com"
+            onChange={(e) => save("deepseek_base_url", e.target.value.trim())}
+            className="w-56"
+          />
+        </div>
+        {/* 模型：手填 + 拉取下拉 */}
+        <div className="flex items-center justify-between gap-3 border-t border-border px-3.5 py-2.5">
+          <div className="flex min-w-0 flex-col">
+            <span className="text-base text-primary">模型名称</span>
+            <span className="mt-0.5 text-xs leading-relaxed text-tertiary">
+              可手填，或用右侧按钮按 Key 和 URL 拉取模型列表
+            </span>
+          </div>
+          <div className="flex flex-col items-end gap-1.5">
+            <div className="flex items-center gap-1">
+              <Input
+                type="text"
+                value={settings.deepseek_model || ""}
+                placeholder="deepseek-chat"
+                onChange={(e) => save("deepseek_model", e.target.value.trim())}
+                className="w-40"
+              />
+              <Button
+                variant="ghost"
+                className="h-8 shrink-0 px-2"
+                onClick={() => void fetchModels()}
+                disabled={fetching}
+                aria-label="拉取模型列表"
+              >
+                {fetching ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
+                拉取模型
+              </Button>
+            </div>
+            {models.length > 0 && (
+              <Select
+                value={settings.deepseek_model || ""}
+                onValueChange={(v) => save("deepseek_model", v)}
+                options={models.map((m) => ({ value: m, label: m }))}
+              />
+            )}
+            {fetchError && <p className="text-xs text-error">{fetchError}</p>}
+          </div>
+        </div>
+        {/* 思考强度 */}
+        <div className="flex items-center justify-between gap-3 border-t border-border px-3.5 py-2.5">
+          <div className="flex min-w-0 flex-col">
+            <span className="text-base text-primary">思考强度</span>
+            <span className="mt-0.5 text-xs leading-relaxed text-tertiary">
+              越低越快、越省额度。保存后立即生效
+            </span>
+          </div>
+          <div className="w-28">
+            <SettingControl
+              item={{
+                key: "reasoning_effort",
+                label: "思考强度",
+                type: "select",
+                options: ["off", "low", "high", "max"],
+                labels: ["关闭", "低", "高", "最高"],
+              }}
+              value={settings.reasoning_effort || ""}
+              onSave={save}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -193,7 +291,7 @@ function ToolPermissionSection() {
 
   if (tools.length === 0) return null;
 
-  const groups: { title: string; mode: "auto" | "ask"; hint?: string }[] = [
+  const groups: { title: string; mode: "auto" | "ask" }[] = [
     { title: "自动运行", mode: "auto" },
     { title: "需要询问", mode: "ask" },
   ];
@@ -274,16 +372,12 @@ function SettingControl({
       />
     );
   }
-  const isPw = item.type === "password";
-  const isKey = item.key === "deepseek_api_key";
   return (
     <Input
-      type={isPw ? "password" : "text"}
-      value={isKey ? "" : value}
-      placeholder={isKey ? (value ? "已配置（输入以更换）" : "未配置") : undefined}
-      onChange={(e) => {
-        if (e.target.value.trim() || !isKey) onSave(item.key, e.target.value.trim());
-      }}
+      type={item.type === "password" ? "password" : "text"}
+      value={value}
+      placeholder={item.placeholder}
+      onChange={(e) => onSave(item.key, e.target.value.trim())}
       className="w-48"
     />
   );

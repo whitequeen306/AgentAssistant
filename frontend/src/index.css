@@ -511,6 +511,25 @@ select {
   background: var(--color-surface-sunken);
   font-weight: 600;
 }
+/* 宽表横向滚动：列宽按内容走（但不超上限），汉字不再被压成一字一行的竖排 */
+.md-table-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.md-table-scroll table {
+  width: max-content;
+  min-width: 100%;
+}
+.md-table-scroll th,
+.md-table-scroll td {
+  min-width: 3.5em;
+  max-width: 34em;
+  overflow-wrap: anywhere;
+}
+/* 长链接是竖排字与撑破布局的另一元凶 */
+.md a {
+  overflow-wrap: anywhere;
+}
 .md blockquote {
   border-left: 3px solid var(--color-accent);
   background: var(--color-accent-soft);

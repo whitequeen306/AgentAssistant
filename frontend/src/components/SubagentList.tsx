@@ -1,11 +1,11 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bot,
   ChevronDown,
   ChevronRight,
+  FolderCog,
   FolderSearch,
   Globe,
-  FolderCog,
   MousePointerClick,
   Pause,
   Play,
@@ -15,6 +15,8 @@ import {
 } from "lucide-react";
 import { Markdown } from "@/components/Markdown";
 import { OrganizerApproval } from "@/components/OrganizerApproval";
+import { SaveReportButton } from "@/components/SaveReportButton";
+import { SubagentStream } from "@/components/SubagentStream";
 import { cn } from "@/lib/cn";
 import { getApi } from "@/lib/bridge";
 import { useStore } from "@/lib/store";
@@ -75,9 +77,35 @@ export function SubagentList({ taskIds }: { taskIds: string[] }) {
 }
 
 function SubagentRow({ task }: { task: SubagentTaskView }) {
-  const [expanded, setExpanded] = useState(false);
   const active = isActive(task.status);
   const failed = task.status === "failed" || task.status === "interrupted";
+  // 运行中默认展开：让用户实时看到它在搜什么、读到什么，而不是只转一个状态灯。
+  // 用户手动收起后不再自动弹开（否则一边看报告一边被顶开，很烦）。
+  const [expanded, setExpanded] = useState(active);
+  const [userCollapsed, setUserCollapsed] = useState(false);
+  // 过程流（思考/工具行）单独控制：运行中常驻，完成后自动收起——
+  // 此时用户要的是报告，几十行过程拼在报告上面只会碍事。失败/中断不收，方便排障。
+  const [showProcess, setShowProcess] = useState(active);
+  const prevActive = useRef(active);
+
+  useEffect(() => {
+    if (active && !userCollapsed) {
+      setExpanded(true);
+      setShowProcess(true);
+    }
+    if (prevActive.current && !active && task.status === "completed") {
+      setShowProcess(false);
+    }
+    prevActive.current = active;
+  }, [active, userCollapsed, task.status]);
+
+  const toggle = () => {
+    setExpanded((prev) => {
+      const next = !prev;
+      setUserCollapsed(!next);
+      return next;
+    });
+  };
 
   return (
     <div
@@ -92,7 +120,7 @@ function SubagentRow({ task }: { task: SubagentTaskView }) {
     >
       <button
         type="button"
-        onClick={() => setExpanded((v) => !v)}
+        onClick={toggle}
         className="flex w-full items-center gap-2 text-left"
       >
         {expanded ? (
@@ -126,7 +154,7 @@ function SubagentRow({ task }: { task: SubagentTaskView }) {
       </button>
 
       {/* Rolling one-line progress while running (no click needed). */}
-      {task.label && active && (
+      {task.label && active && !expanded && (
         <div
           data-selectable
           title={task.label}
@@ -139,13 +167,27 @@ function SubagentRow({ task }: { task: SubagentTaskView }) {
       {task.role === "organizer" && task.status === "waiting_user" && (
         <OrganizerApproval task={task} />
       )}
-      {expanded && <SubagentDetail task={task} />}
+      {expanded && (
+        <SubagentDetail
+          task={task}
+          showProcess={showProcess}
+          onToggleProcess={() => setShowProcess((v) => !v)}
+        />
+      )}
       <SubagentControls task={task} />
     </div>
   );
 }
 
-function SubagentDetail({ task }: { task: SubagentTaskView }) {
+function SubagentDetail({
+  task,
+  showProcess,
+  onToggleProcess,
+}: {
+  task: SubagentTaskView;
+  showProcess: boolean;
+  onToggleProcess: () => void;
+}) {
   const output = useMemo(() => {
     const result = task.result;
     if (!result) return "";
@@ -171,15 +213,22 @@ function SubagentDetail({ task }: { task: SubagentTaskView }) {
           {task.goal}
         </div>
       )}
-      {/* Activity timeline (persisted events, newest last). */}
+      {/* 事件流：运行中逐条自上而下出现；完成后默认收起，点「查看过程」再展开 */}
       {task.events.length > 0 && (
-        <ul className="flex max-h-48 flex-col gap-0.5 overflow-auto border-l border-border pl-2.5">
-          {task.events.map((event) => (
-            <li key={event.event_id} className="text-[11px] leading-relaxed text-tertiary">
-              <TimelineLine type={event.type} payload={event.payload} />
-            </li>
-          ))}
-        </ul>
+        <>
+          <button
+            type="button"
+            onClick={onToggleProcess}
+            className="self-start text-[11px] text-tertiary hover:text-secondary"
+          >
+            {showProcess
+              ? "收起过程 ↑"
+              : `查看过程（${task.events.length} 条搜索与阅读记录）`}
+          </button>
+          {showProcess && (
+            <SubagentStream events={task.events} active={isActive(task.status)} />
+          )}
+        </>
       )}
       {task.result?.error && (
         <div data-selectable className="text-[11px] text-error">
@@ -194,6 +243,11 @@ function SubagentDetail({ task }: { task: SubagentTaskView }) {
           <Markdown>{output}</Markdown>
         </div>
       )}
+      {/* 调研报告落库入口。manager 路径下这张卡片是唯一的展示位置，
+          存库按钮必须在这里也有（内联卡片会被去重隐藏）。 */}
+      {task.role === "researcher" && output && (
+        <SaveReportButton title={task.goal || task.title} content={output} />
+      )}
       {!output && partial && (
         <div className="flex flex-col gap-1">
           <span className="text-[11px] text-error">任务未完成，以下为已保留的进度：</span>
@@ -207,35 +261,6 @@ function SubagentDetail({ task }: { task: SubagentTaskView }) {
       )}
     </div>
   );
-}
-
-function TimelineLine({
-  type,
-  payload,
-}: {
-  type: string;
-  payload: Record<string, unknown>;
-}) {
-  if (type === "status") {
-    const status = String(payload.status || "");
-    return <span>状态 → {STATUS_LABELS[status as SubagentStatus] ?? status}</span>;
-  }
-  if (type === "progress" || type === "activity") {
-    const label = typeof payload.label === "string" ? payload.label : "";
-    const turn = payload.turn;
-    const prefix = typeof turn === "number" ? `第 ${turn} 轮 · ` : "";
-    return (
-      <span className="break-words">
-        {prefix}
-        {label || type}
-      </span>
-    );
-  }
-  if (type === "result") {
-    const result = payload.result as { summary?: string } | undefined;
-    return <span className="break-words">结果：{result?.summary || "已返回"}</span>;
-  }
-  return <span>{type}</span>;
 }
 
 function SubagentControls({ task }: { task: SubagentTaskView }) {

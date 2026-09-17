@@ -485,86 +485,20 @@ class TestInvokeOnText:
         assert not (tmp_path / "pending_text.json.consuming").exists()
 
 
-# ─── report_perf (perf anomaly → dedicated '性能检测' conversation) ────────
+# ─── report_silent (thread-scoped suppression used by research) ────────────
 
 
-class TestReportPerf:
-    def _wait_perf_thread(self):
-        for t in threading.enumerate():
-            if t.name == "perf-report":
-                t.join(timeout=5)
-
-    def test_routes_to_dedicated_pinned_conversation(self, bridge):
-        import agent_assistant.ui.store as store_mod
-
-        bridge.set_message_handler(lambda text: f"诊断: {text}")
-        bridge.report_perf("CPU 95%, Memory 90%")
-        self._wait_perf_thread()
-        perf = [c for c in store_mod.ui_store.list_conversations() if c["title"] == "性能检测"]
-        assert len(perf) == 1
-        assert perf[0]["pinned"] is True
-        # the anomaly (user) + the diagnosis (assistant) both persisted there
-        msgs = store_mod.ui_store.list_messages(perf[0]["id"])
-        roles = [m["role"] for m in msgs]
-        assert "user" in roles
-        assert "assistant" in roles
-        assert any("诊断" in m["content"] for m in msgs if m["role"] == "assistant")
-        # notification pushed to the (current) UI, not the analysis streamed in
-        reports = [d for t, d in bridge.events if t == "perf_report"]
-        assert reports and "性能报告" in reports[0]["message"]
-        assert reports[0]["conv_id"] == perf[0]["id"]
-
-    def test_anomaly_persisted_as_user_message(self, bridge):
-        # Issue #2: the anomaly itself must be saved (so the log explains each diagnosis)
-        import agent_assistant.ui.store as store_mod
-
-        bridge.set_message_handler(lambda text: "ok")
-        bridge.report_perf("CPU 99%")
-        self._wait_perf_thread()
-        perf = [c for c in store_mod.ui_store.list_conversations() if c["title"] == "性能检测"][0]
-        user_msgs = [m for m in store_mod.ui_store.list_messages(perf["id"]) if m["role"] == "user"]
-        assert user_msgs and "CPU 99%" in user_msgs[0]["content"]
-
-    def test_perf_silent_true_during_agent_call(self, bridge):
-        from agent_assistant.ui.bridge import api_bridge
-
-        seen = []
-
-        def handler(text):
-            seen.append(api_bridge.perf_silent)  # True while the perf thread runs the agent
-            return "ok"
-
-        bridge.set_message_handler(handler)
-        bridge.report_perf("anomaly")
-        self._wait_perf_thread()
-        assert seen == [True]
-        assert api_bridge.perf_silent is False  # cleared after the run
-
-    def test_perf_silent_false_in_other_thread(self, bridge):
-        # Scoped to the perf thread only — a different thread is not silenced
+class TestReportSilent:
+    def test_report_silent_false_in_other_thread(self, bridge):
+        # report_silent stays False on normal threads (research reads it).
         from agent_assistant.ui.bridge import api_bridge
 
         seen = []
 
         def check():
-            seen.append(api_bridge.perf_silent)
+            seen.append(api_bridge.report_silent)
 
-        t = threading.Thread(target=check, name="not-perf")
+        t = threading.Thread(target=check, name="not-report")
         t.start()
         t.join()
         assert seen == [False]
-
-    def test_reuses_existing_performance_conversation(self, bridge):
-        import agent_assistant.ui.store as store_mod
-
-        bridge.set_message_handler(lambda text: "ok")
-        bridge.report_perf("first anomaly")
-        self._wait_perf_thread()
-        first = [c for c in store_mod.ui_store.list_conversations() if c["title"] == "性能检测"][0]
-        bridge.report_perf("second anomaly")
-        self._wait_perf_thread()
-        perf = [c for c in store_mod.ui_store.list_conversations() if c["title"] == "性能检测"]
-        assert len(perf) == 1  # not duplicated — find_or_create reused it
-        assert perf[0]["id"] == first["id"]
-        msgs = store_mod.ui_store.list_messages(first["id"])
-        assert sum(1 for m in msgs if m["role"] == "user") == 2  # both anomalies logged

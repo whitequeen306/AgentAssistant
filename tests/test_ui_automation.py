@@ -765,7 +765,12 @@ class TestPermissionAndHabits:
         assert "ui_inspect" in SECTION_TASK_HABITS
         assert "ui_click" in SECTION_TASK_HABITS
         assert "ui_scroll" in SECTION_TASK_HABITS
-        assert "音乐" in SECTION_TASK_HABITS or "siblings" in SECTION_TASK_HABITS
+        # Hard-won desktop-automation craft that must not be dropped when the
+        # section is edited: never drive the assistant's own window, land the
+        # caret in the real input box before typing, and verify via `landed`.
+        assert "title_pattern" in SECTION_TASK_HABITS
+        assert "landed" in SECTION_TASK_HABITS
+        assert "ctrl+f" in SECTION_TASK_HABITS
 
     def test_labels_registered(self):
         from agent_assistant.tools.labels import TOOL_LABELS_ZH, tool_label

@@ -1,3 +1,4 @@
+import { DueMilestoneBanner } from "@/components/DueMilestoneBanner";
 import { useEffect, useRef } from "react";
 import { Moon, Sun, Mic, X, Maximize2, Shrink } from "lucide-react";
 import { ChatMessage } from "@/components/ChatMessage";
@@ -40,10 +41,14 @@ export function ChatPage() {
       .catch(() => {});
   }, [state]);
 
-  const send = (text: string, contextAttachment?: ContextAttachment) => {
+  const send = (
+    text: string,
+    contextAttachment?: ContextAttachment,
+    research?: boolean,
+  ) => {
     actions.sendMessage(text);
     getApi()
-      ?.send_message(text, undefined, undefined, contextAttachment)
+      ?.send_message(text, undefined, undefined, contextAttachment, research)
       .catch(() => {
         actions.endThought();
         actions.setThinking(false);
@@ -98,6 +103,7 @@ export function ChatPage() {
         ref={scrollRef}
         className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto px-4 py-4"
       >
+        <DueMilestoneBanner />
         {chat.map((item) => (
           <ChatMessage key={item.id} item={item} />
         ))}
@@ -108,6 +114,7 @@ export function ChatPage() {
             onDraft={() => {
               /* draft chips fill via ChatInput below */
             }}
+            onPractice={(kind, sourceId) => actions.startPractice({ kind, sourceId })}
           />
         )}
       </div>

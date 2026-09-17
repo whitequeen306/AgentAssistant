@@ -150,6 +150,7 @@ def test_hosted_prompt_includes_narration_section(restore_narration):
     loop = AgentLoop(conversation_id="t-narration")
     with patch("agent_assistant.agent.loop.memory_service") as mock_ms:
         mock_ms.build_profile_additions.return_value = ""
+        mock_ms.build_study_profile_section.return_value = ""
         loop._refresh_system_prompt()
     assert "现场解说" in loop.messages[0]["content"]
     # Milestone-based narration: not every micro-step (would be noisy).
@@ -161,5 +162,6 @@ def test_desktop_prompt_excludes_narration_section(restore_narration):
     loop = AgentLoop(conversation_id="t-plain")
     with patch("agent_assistant.agent.loop.memory_service") as mock_ms:
         mock_ms.build_profile_additions.return_value = ""
+        mock_ms.build_study_profile_section.return_value = ""
         loop._refresh_system_prompt()
     assert "现场解说" not in loop.messages[0]["content"]

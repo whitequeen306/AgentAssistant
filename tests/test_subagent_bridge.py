@@ -171,6 +171,52 @@ def test_manager_events_are_pushed_with_task_id_and_sequence(tmp_path) -> None:
         store.close()
 
 
+def test_concurrent_emit_publishes_in_sequence_order(tmp_path) -> None:
+    """emit() must publish in sequence order even when called concurrently.
+
+    Regression: ``next_sequence()`` and ``_sink()`` were not inside one
+    critical section, so two threads could reserve 5 and 6 and then publish
+    6 before 5. That showed up as an intermittent failure which moved
+    between the subagent suites on every full run — the sink is the API/UI's
+    only view of ordering, so out-of-order publication is a real bug, not
+    just a flaky assertion.
+    """
+    store = SubagentStore(tmp_path / "subagents.db")
+    pushed: list[int] = []
+    push_lock = threading.Lock()
+
+    def sink(event):
+        with push_lock:
+            pushed.append(event.sequence)
+
+    mgr = SubagentManager(
+        store,
+        runner_for=lambda role: instant_runner,
+        event_sink=sink,
+        archive_root=tmp_path / "runs",
+        resources=ResourceCoordinator(),
+    )
+    try:
+        mgr.dispatch([make_spec("t1")])
+
+        def burst() -> None:
+            for i in range(25):
+                mgr.emit("t1", "activity", {"label": f"step-{i}"})
+
+        workers = [threading.Thread(target=burst) for _ in range(4)]
+        for t in workers:
+            t.start()
+        for t in workers:
+            t.join(timeout=10)
+    finally:
+        mgr.shutdown()
+        store.close()
+
+    # dispatch + completion emit too, so the burst is a floor not an exact count
+    assert len(pushed) >= 100
+    assert pushed == sorted(pushed), "sink observed out-of-order sequences"
+
+
 def test_no_manager_bound_is_safe(monkeypatch) -> None:
     api = ApiBridge()
     api._active_conv_id = "conv-1"

@@ -27,6 +27,25 @@ class TestConversations:
         assert convs[0]["id"] == conv["id"]
         assert convs[0]["pinned"] is False
 
+    def test_purge_retired_report_conversations(self, store):
+        # Removed briefing/perf features leave dedicated convs behind —
+        # startup cleanup must remove them (with messages), keep the rest.
+        a = store.create_conversation("晨间播报")
+        b = store.create_conversation("性能检测")
+        keep = store.create_conversation("正常会话")
+        store.add_message(a["id"], "user", "report")
+        store.add_message(keep["id"], "user", "hello")
+
+        removed = store.purge_retired_report_conversations()
+        assert removed == 2
+        titles = {c["title"] for c in store.list_conversations()}
+        assert titles == {"正常会话"}
+        assert store.list_messages(keep["id"])
+        # Idempotent: second pass removes nothing.
+        assert store.purge_retired_report_conversations() == 0
+        assert not store.list_messages(a["id"])
+        assert not store.list_messages(b["id"])
+
     def test_title_from_first_message_truncated(self, store):
         conv = store.create_conversation()
         long_text = "x" * 100

@@ -97,15 +97,26 @@ class ProfileStore:
         lines = [f"- {k}: {v}" for k, v in entries.items()]
         text = "\n".join(lines)
 
-        # Enforce token cap — truncate oldest entries if needed
+        # Enforce token cap — drop the OLDEST entries if needed.
+        #
+        # ``lines`` is in insertion order (oldest first) and a profile holds
+        # *stable facts*, so the thing that should go is the stale one: a
+        # newly learned fact (new city, new goal) is worth more than the
+        # first thing ever recorded. The previous implementation did the
+        # opposite — it kept the oldest and dropped the newest, despite the
+        # comment claiming otherwise — which is backwards for a user profile.
+        #
+        # At least one entry survives even if it alone exceeds the cap;
+        # an empty profile section is worse than an over-cap one.
         if count_tokens(text) > self._token_cap:
-            # Keep entries until we hit the cap
             kept: list[str] = []
-            for line in lines:
-                candidate = "\n".join(kept + [line])
-                if count_tokens(candidate) > self._token_cap:
+            used = 0
+            for line in reversed(lines):
+                cost = count_tokens(line)
+                if kept and used + cost > self._token_cap:
                     break
-                kept.append(line)
+                kept.insert(0, line)
+                used += cost
             text = "\n".join(kept)
 
         return text

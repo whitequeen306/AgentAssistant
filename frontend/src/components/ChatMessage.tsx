@@ -1,11 +1,12 @@
 import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, AlertTriangle, Bot, Check, X } from "lucide-react";
 import { Markdown } from "@/components/Markdown";
+import { SaveReportButton } from "@/components/SaveReportButton";
+import { SubagentStream } from "@/components/SubagentStream";
 import { SubagentList } from "@/components/SubagentList";
-import { summarizeActivity } from "@/lib/activity";
-import { getApi } from "@/lib/bridge";
+import { isResearchCovered, summarizeActivity } from "@/lib/activity";
 import { cn } from "@/lib/cn";
-import { actions } from "@/lib/store";
+import { actions, useStore } from "@/lib/store";
 import type { ActivityStep, ChatItem } from "@/types";
 
 function formatData(v: unknown): string {
@@ -77,9 +78,14 @@ function ActivityBlock({
 }: {
   item: Extract<ChatItem, { kind: "activity" }>;
 }) {
-  const summary = useMemo(() => summarizeActivity(item.steps), [item.steps]);
-  const toolSteps = item.steps.filter((s) => s.category !== "thought");
-  const pending = item.steps.some((s) => s.status === "pending");
+  const subagents = useStore((s) => s.subagents);
+  const visibleSteps = useMemo(
+    () => item.steps.filter((s) => !isResearchCovered(s, subagents)),
+    [item.steps, subagents],
+  );
+  const summary = useMemo(() => summarizeActivity(visibleSteps), [visibleSteps]);
+  const toolSteps = visibleSteps.filter((s) => s.category !== "thought");
+  const pending = visibleSteps.some((s) => s.status === "pending");
   // Only the last tool paints the header red. One early miss used to keep
   // a 30-step group red for the whole turn, looking like "every tool failed".
   const lastTool = toolSteps[toolSteps.length - 1];
@@ -93,6 +99,9 @@ function ActivityBlock({
         .join("\n\n"),
     [item.steps],
   );
+
+  // 所有步骤都被子任务卡片接管 → 整块不渲染，不留空分组与假标题
+  if (visibleSteps.length === 0) return null;
 
   // Thought-only: click "Thinking…" / "Thought for Xs" to reveal CoT.
   if (toolSteps.length === 0) {
@@ -154,14 +163,14 @@ function ActivityBlock({
       </button>
       {item.expanded ? (
         <ul className="ml-2 mt-0.5 flex flex-col gap-0.5 border-l border-border pl-2.5">
-          {item.steps.map((step) => (
+          {visibleSteps.map((step) => (
             <ActivityStepRow key={step.id} step={step} />
           ))}
         </ul>
       ) : (
         // Sub-agent cards stay visible even collapsed — a dispatched research
         // agent is significant enough to surface without a click (Cursor-style).
-        <ResearchCards steps={item.steps} />
+        <ResearchCards steps={visibleSteps} />
       )}
     </div>
   );
@@ -197,19 +206,6 @@ function ResearchStepRow({ step }: { step: ActivityStep }) {
     }
   }, [step.args]);
 
-  const [saved, setSaved] = useState(false);
-
-  const saveReport = async () => {
-    const api = getApi();
-    if (!api?.save_note_file || !report) return;
-    const res = await api.save_note_file(
-      `调研：${(goal || "深度调研").slice(0, 40)}`,
-      report,
-      "调研",
-    );
-    setSaved(!!res.ok);
-  };
-
   /** Full Markdown report returned by dispatch_research (the deliverable).
    *  On failure the salvaged progress (data.summary) takes its place so the
    *  user can see "进度在哪" directly in the card instead of being asked. */
@@ -237,6 +233,9 @@ function ResearchStepRow({ step }: { step: ActivityStep }) {
     }
     return "";
   }, [step.args, step.data]);
+
+  const subagents = useStore((s) => s.subagents);
+  if (isResearchCovered(step, subagents)) return null;
 
   return (
     <li className="text-xs">
@@ -290,7 +289,13 @@ function ResearchStepRow({ step }: { step: ActivityStep }) {
             {goal}
           </div>
         )}
-        {step.progress && (
+        {/* 实时事件流：思考 / 工具调用 / 结果逐条出现，和 SubagentList 同一个流 */}
+        {!!step.events?.length && (
+          <div className="mt-1.5 pl-5.5">
+            <SubagentStream events={step.events} active={pending} />
+          </div>
+        )}
+        {step.progress && !step.events?.length && (
           <div
             data-selectable
             title={step.progress.label}
@@ -321,25 +326,7 @@ function ResearchStepRow({ step }: { step: ActivityStep }) {
           </div>
         )}
         {report && !pending && (
-          <button
-            type="button"
-            onClick={() => void saveReport()}
-            disabled={saved}
-            className={cn(
-              "mt-1.5 inline-flex items-center gap-1 rounded-pill px-2.5 py-0.5 text-[11px]",
-              saved
-                ? "bg-success/15 text-success"
-                : "bg-accent-soft text-accent-strong hover:brightness-105",
-            )}
-          >
-            {saved ? (
-              <>
-                <Check className="h-3 w-3" />已存入资料库
-              </>
-            ) : (
-              "存入资料库"
-            )}
-          </button>
+          <SaveReportButton title={goal || "深度调研"} content={report} />
         )}
         {open && detail && (
           <pre

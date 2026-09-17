@@ -57,3 +57,15 @@ def test_llm_kwargs_disable_thinking_when_off(restore_reasoning):
     kwargs = LLMClient()._build_kwargs([], None, 0.7, False)
     assert "reasoning_effort" not in kwargs
     assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+def test_llm_kwargs_response_format_passthrough():
+    kwargs = LLMClient()._build_kwargs(
+        [], None, 0.4, False, response_format={"type": "json_object"}
+    )
+    assert kwargs["response_format"] == {"type": "json_object"}
+
+
+def test_llm_kwargs_response_format_omitted_when_none():
+    kwargs = LLMClient()._build_kwargs([], None, 0.4, False)
+    assert "response_format" not in kwargs

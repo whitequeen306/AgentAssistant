@@ -97,7 +97,6 @@ class TestMemoryManager:
         self.mgr = MemoryManager(
             token_budget=500,  # small budget to trigger truncation easily
             summary_cap=200,
-            soft_rounds=4,
             summarizer=_mock_summarizer,
             snapshot_resolver=_test_snapshot_resolver,
         )
@@ -222,15 +221,60 @@ class TestMemoryManager:
         assert result[0]["role"] == "system"
         assert result[1]["role"] == "user"
         assert "帮我打开网易云播放夜曲" in result[1]["content"]
-        # Middle rounds were dropped + summarized (no unbounded growth).
-        assert len(result) < len(msgs)
-        assert self.mgr.dropped_count > 0
-        assert self.mgr.rolling_summary != ""
+        # History growth stays bounded. Two mechanisms achieve it now:
+        # dropping into the rolling summary, or — when that alone suffices —
+        # replacing old tool RESULTS with one-line summaries in place (age-off).
+        assert len(result) <= len(msgs)
+        summarized_in_place = "历史工具结果已压缩" in str(result)
+        assert summarized_in_place or (
+            self.mgr.dropped_count > 0 and self.mgr.rolling_summary != ""
+        )
         # Pairing stays valid: nothing after the anchor starts on a bare tool.
         assert result[2]["role"] != "tool"
         # The most recent tool round is kept in full.
         assert result[-1]["role"] == "tool"
         assert result[-1]["tool_call_id"] == "t8"
+
+    def test_heavy_history_still_drops_and_summarizes(self):
+        """When age-off alone cannot bring the turn under budget, the middle
+        rounds are still dropped into the rolling summary (and the anchor
+        still survives) — age-off must not disable compaction entirely."""
+        msgs = [{"role": "system", "content": "sys"}]
+        msgs.append({"role": "user", "content": "长任务 " + "x" * 400})
+        # ① 大工具结果 —— age-off 会把它们压成一行
+        for i in range(6):
+            msgs.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": f"h{i}",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": f'{{"q": "{i}"}}'},
+                }],
+            })
+            msgs.append({
+                "role": "tool",
+                "tool_call_id": f"h{i}",
+                "content": '{"ok": true, "data": "' + "blob " * 400 + '"}',
+            })
+        # ② 长对话消息 —— age-off 只压工具结果，这些它管不着，
+        #    所以必须靠 Compaction 兜底（这条测试防的就是
+        #    "age-off 之后永不丢消息"这种错觉）
+        for i in range(10):
+            msgs.append({"role": "assistant", "content": f"阶段{i}分析 " + "y" * 700})
+            msgs.append({"role": "user", "content": f"继续{i} " + "z" * 700})
+
+        result = self.mgr.maybe_compact(msgs)
+
+        assert result[0]["role"] == "system"
+        assert result[1]["role"] == "user"
+        # 锚点是【最后一条】user 消息（这里是"继续9"），它必须留下
+        assert "继续9" in result[1]["content"]
+        # Compaction 兜底：超预算的对话被丢进摘要
+        # （注意：老工具组可能整个被丢掉，而不只是压成摘要 —— 所以这里
+        #  不能断言"结果里一定有摘要行"，那是 age-off 自己的测试负责的）
+        assert self.mgr.dropped_count > 0
+        assert self.mgr.rolling_summary != ""
 
     def test_inflight_turn_under_budget_untouched(self):
         """An in-flight agentic turn within budget is never modified."""
@@ -434,7 +478,6 @@ class TestMemoryManager:
         mgr = MemoryManager(
             token_budget=200,
             summary_cap=200,
-            soft_rounds=4,
             summarizer=_mock_summarizer,
         )
         msgs = [
@@ -495,59 +538,161 @@ class TestMemoryManager:
             {"role": "tool", "tool_call_id": call_id, "content": payload},
         ]
 
-    def test_old_group_args_shrunk_recent_kept(self):
-        """6 write_file groups: the first 2 get long values cut, last 4 intact."""
+    # 工具结果要够大，累计才越得过 token 保护线（budget=500 → 保护线 175 tok）。
+    # 否则 pruning 会正确地什么都不做，测试就变成了假通过。
+    _FAT_PAYLOAD = '{"ok": true, "data": "' + "blob " * 120 + '"}'
+
+    @staticmethod
+    def _assistant_msgs(msgs: list[dict]) -> list[dict]:
+        return [
+            m for m in msgs
+            if m.get("role") == "assistant" and m.get("tool_calls")
+        ]
+
+    def test_old_group_args_placeholdered_recent_kept(self):
+        """老组参数整段换成占位（不是逐值截断），最新组原样保留。"""
         fat_args = json.dumps({"path": "a.txt", "content": "字" * 2000},
                               ensure_ascii=False)
         msgs = [{"role": "system", "content": "sys"},
                 {"role": "user", "content": "task"}]
         for i in range(6):
-            msgs += self._tool_group(f"c{i}", fat_args)
+            msgs += self._tool_group(f"c{i}", fat_args, payload=self._FAT_PAYLOAD)
 
-        changed = self.mgr._age_off_old_arguments(msgs)
-        assert changed >= 1
-        for i in range(2):
-            args = json.loads(msgs[2 + i * 2]["tool_calls"][0]["function"]["arguments"])
-            assert args["path"] == "a.txt"  # short value preserved verbatim
-            assert args["content"].endswith("…[已截断]")
-            assert len(args["content"]) < 220
-        for i in range(4, 6):
-            args = json.loads(msgs[2 + i * 2]["tool_calls"][0]["function"]["arguments"])
-            assert args["content"] == "字" * 2000  # recent groups untouched
+        results, args_changed = self.mgr._age_off_old_groups(msgs)
+        assert results >= 1 and args_changed >= 1
+
+        aged = [
+            json.loads(a["tool_calls"][0]["function"]["arguments"])
+            for a in self._assistant_msgs(msgs)
+        ]
+        assert aged[0].get("_aged") is True        # 最老的必定被占位
+        # 被占位的一定是更早的那批（不会出现"新的被压、旧的保留"）。
+        # 注意：本用例的保护线只有 175 tok，而单组成本远超它，所以连最新
+        # 一组也会被降级——预算优先。"保护线装得下时最新组原样"由
+        # test_recent_group_inside_protect_line_kept 单独锁住。
+        flags = [bool(a.get("_aged")) for a in aged]
+        assert flags == sorted(flags, reverse=True)
+        # 占位不是"截断"：整个 content 字段都不在了
+        assert "content" not in aged[0]
+
+    def test_placeholder_carries_key_and_hint(self):
+        """占位三要素：压缩标记 + 召回钥匙 + 定位提示。"""
+        fat_args = json.dumps({"path": "notes/a.txt", "content": "字" * 2000},
+                              ensure_ascii=False)
+        msgs = [{"role": "system", "content": "sys"}]
+        for i in range(6):
+            msgs += self._tool_group(f"c{i}", fat_args, payload=self._FAT_PAYLOAD)
+        self.mgr._age_off_old_groups(msgs)
+
+        placeholder = json.loads(
+            self._assistant_msgs(msgs)[0]["tool_calls"][0]["function"]["arguments"]
+        )
+        assert placeholder["_aged"] is True
+        assert placeholder["_call_id"] == "c0"
+        assert placeholder["_hint"] == "notes/a.txt"
+
+    def test_recent_group_inside_protect_line_kept(self):
+        """组成本装得进保护线时，最近的若干组参数与结果都原样保留。"""
+        mgr = MemoryManager(
+            token_budget=2_000,          # 保护线 700 tok，装得下最新两组
+            summarizer=_mock_summarizer,
+            snapshot_resolver=lambda _n: None,
+        )
+        fat_args = json.dumps({"path": "notes/a.txt", "content": "x" * 300})
+        msgs = [{"role": "system", "content": "sys"}]
+        for i in range(6):
+            msgs += self._tool_group(f"c{i}", fat_args, payload=self._FAT_PAYLOAD)
+
+        results, args_changed = mgr._age_off_old_groups(msgs)
+        assert results >= 1 and args_changed >= 1
+
+        aged = [
+            json.loads(a["tool_calls"][0]["function"]["arguments"])
+            for a in self._assistant_msgs(msgs)
+        ]
+        assert aged[0].get("_aged") is True        # 保护线外的老组被降级
+        assert aged[-1].get("_aged") is None       # 保护线内的最新组原样
+        assert aged[-1]["content"] == "x" * 300
+
+    def test_short_args_never_replaced(self):
+        """短参数（<120 字符）不动 —— 占位比它还长，替换是反向优化。"""
+        small = json.dumps({"path": "a.txt"})
+        msgs = [{"role": "system", "content": "sys"}]
+        for i in range(6):
+            msgs += self._tool_group(f"c{i}", small, payload=self._FAT_PAYLOAD)
+
+        results, args_changed = self.mgr._age_off_old_groups(msgs)
+        assert results >= 1        # 结果照常压成摘要
+        assert args_changed == 0   # 但参数一个都不动
+        for a in self._assistant_msgs(msgs):
+            assert a["tool_calls"][0]["function"]["arguments"] == small
+
+    def test_short_result_never_summarized(self):
+        """短结果（<120 字符）不压 —— 与参数门槛对称。
+
+        摘要要加 "[历史工具结果已压缩]" 标记和召回指针，压一条本就很短的
+        结果会让 payload 变大（实测 82 字符 → 114 字符）。
+        """
+        fat_args = json.dumps({"path": "notes/a.txt", "content": "x" * 300})
+        short_result = '{"ok": true}'
+        msgs = [{"role": "system", "content": "sys"}]
+        for i in range(6):
+            msgs += self._tool_group(f"c{i}", fat_args, payload=short_result)
+
+        results, args_changed = self.mgr._age_off_old_groups(msgs)
+        assert results == 0              # 结果本来就短，压了更长
+        assert args_changed >= 1         # 但参数照常降级
+        tool_msgs = [m for m in msgs if m.get("role") == "tool"]
+        assert all(m["content"] == short_result for m in tool_msgs)
+
+    def test_placeholder_stays_valid_json(self):
+        """占位必须是合法 JSON —— 这是 API 契约。"""
+        fat_args = json.dumps({"content": "字" * 3000})
+        msgs = [{"role": "system", "content": "sys"}]
+        for i in range(6):
+            msgs += self._tool_group(f"c{i}", fat_args, payload=self._FAT_PAYLOAD)
+        self.mgr._age_off_old_groups(msgs)
+        for a in self._assistant_msgs(msgs):
+            raw = a["tool_calls"][0]["function"]["arguments"]
+            assert isinstance(json.loads(raw), dict)
 
     def test_age_off_idempotent(self):
         fat_args = json.dumps({"content": "x" * 3000})
         msgs = [{"role": "system", "content": "sys"}]
         for i in range(6):
-            msgs += self._tool_group(f"c{i}", fat_args)
-        self.mgr._age_off_old_arguments(msgs)
+            msgs += self._tool_group(f"c{i}", fat_args, payload=self._FAT_PAYLOAD)
+        self.mgr._age_off_old_groups(msgs)
         snapshot = [json.dumps(m, ensure_ascii=False) for m in msgs]
-        self.mgr._age_off_old_arguments(msgs)
+        assert self.mgr._age_off_old_groups(msgs) == (0, 0)
         assert [json.dumps(m, ensure_ascii=False) for m in msgs] == snapshot
 
-    def test_age_off_keeps_json_parseable_for_snapshot_keying(self):
-        """Aged ui_inspect args must yield the SAME snapshot key as before."""
-        from agent_assistant.tools.ui_automation import ui_inspect_snapshot_key
+    def test_snapshot_group_wholly_exempt(self):
+        """快照组整组豁免：同一批老组里，ui_inspect 不动、write_file 降级。
 
-        fat = json.dumps({"title_pattern": "网易云", "name_contains": "播放",
-                          "notes": "长" * 1500}, ensure_ascii=False)
+        混着构造是为了同时证明两件事——触发确实发生了（write_file 被压），
+        而快照是被"豁免"而不是"根本没触发"。
+        """
+        fat = json.dumps({"title_pattern": "网易云", "notes": "长" * 1500},
+                         ensure_ascii=False)
         msgs = [{"role": "system", "content": "sys"}]
-        for i in range(6):
-            msgs += self._tool_group(f"c{i}", fat, tool="ui_inspect")
-        key_before = ui_inspect_snapshot_key(fat)
-        self.mgr._age_off_old_arguments(msgs)
-        aged = msgs[1]["tool_calls"][0]["function"]["arguments"]
-        parsed = json.loads(aged)  # still valid JSON
-        assert parsed["title_pattern"] == "网易云"  # short filter intact
-        assert parsed["notes"].endswith("…[已截断]")  # fat value shrunk
-        assert ui_inspect_snapshot_key(aged) == key_before
+        for i in range(8):
+            tool = "ui_inspect" if i % 2 == 0 else "write_file"
+            msgs += self._tool_group(f"c{i}", fat, tool=tool,
+                                     payload=self._FAT_PAYLOAD)
+        self.mgr._age_off_old_groups(msgs)
+
+        assistants = self._assistant_msgs(msgs)
+        snap_args = assistants[0]["tool_calls"][0]["function"]["arguments"]
+        plain_args = assistants[1]["tool_calls"][0]["function"]["arguments"]
+        assert json.loads(snap_args)["title_pattern"] == "网易云"   # 原样
+        assert json.loads(plain_args).get("_aged") is True          # 已降级
 
     def test_age_off_skips_incomplete_groups(self):
-        """A bare assistant(tool_calls) (no replies yet) is never aged."""
+        """末尾还没结果的 assistant(tool_calls) 永不被处理。"""
         fat_args = json.dumps({"content": "x" * 3000})
         msgs = [{"role": "system", "content": "sys"}]
         for i in range(5):
-            msgs += self._tool_group(f"c{i}", fat_args)
+            msgs += self._tool_group(f"c{i}", fat_args, payload=self._FAT_PAYLOAD)
         msgs.append({
             "role": "assistant", "content": None,
             "tool_calls": [{
@@ -555,19 +700,9 @@ class TestMemoryManager:
                 "function": {"name": "write_file", "arguments": fat_args},
             }],
         })
-        self.mgr._age_off_old_arguments(msgs)
+        self.mgr._age_off_old_groups(msgs)
         pending_args = msgs[-1]["tool_calls"][0]["function"]["arguments"]
         assert json.loads(pending_args)["content"] == "x" * 3000
-
-    def test_age_off_small_args_untouched(self):
-        """Groups below the size floor keep their args byte-for-byte."""
-        small = json.dumps({"path": "a.txt"})
-        msgs = [{"role": "system", "content": "sys"}]
-        for i in range(6):
-            msgs += self._tool_group(f"c{i}", small)
-        before = [json.dumps(m, ensure_ascii=False) for m in msgs]
-        assert self.mgr._age_off_old_arguments(msgs) == 0
-        assert [json.dumps(m, ensure_ascii=False) for m in msgs] == before
 
     def test_pointer_stub_carries_call_id(self):
         """Superseded-snapshot stub now points at the archive via call_id."""
@@ -649,73 +784,53 @@ class TestMemoryManager:
         finally:
             tool_registry.unregister("plain_probe")
 
-    # ─── Progress checkpoints ─────────────────────────────────────────────
+    # ─── Rolling summary layers ───────────────────────────────────────────
 
-    def test_checkpoint_covers_dropped_range_verbatim(self):
-        """Messages before a dropped checkpoint are NOT re-summarized — the
-        checkpoint text itself lands in the rolling summary; only gaps after
-        it go through the summarizer."""
+    def test_summary_layers_concatenate_without_re_summarizing(self):
+        """Each compaction appends ONE new layer; previously written layers are
+        never re-summarized (that is what keeps old detail from decaying)."""
         calls: list[str] = []
 
         def counting_summarizer(text: str) -> str:
             calls.append(text)
-            return f"GAP#{len(calls)}({text[:40]})"
+            return f"LAYER#{len(calls)}"
 
         mgr = MemoryManager(
             token_budget=150,
-            summary_cap=5000,
-            soft_rounds=4,
+            summary_cap=10**6,          # the cap is not under test here
             summarizer=counting_summarizer,
             snapshot_resolver=_test_snapshot_resolver,
         )
-        cp = "【进度汇报】已完成打开应用和搜索，正在点播放。"
-        mgr.record_checkpoint(cp)
-        msgs = [
+        first_round = [
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "播放夜曲"},
             {"role": "assistant", "content": "step1 " + "x" * 3000},
-            {"role": "assistant", "content": cp},
             {"role": "assistant", "content": "gap1 " + "y" * 3000},
-            {"role": "assistant", "content": "gap2 " + "z" * 3000},
             {"role": "user", "content": "继续"},
         ]
-        result = mgr.maybe_compact(msgs)
-
-        # checkpoint merged VERBATIM (not through the summarizer)
-        assert cp in mgr.rolling_summary
-        # only the ONE post-checkpoint gap was summarized; the pre-checkpoint
-        # rounds ([task, step1]) are covered by the report and never reach
-        # the summarizer at all
+        mgr.maybe_compact(first_round)
+        layer_one = mgr.rolling_summary
+        assert "LAYER#1" in layer_one
         assert len(calls) == 1
-        assert all(cp not in t for t in calls)
-        assert "step1" not in calls[0]
-        assert "gap1" in calls[0]
-        assert "step1" not in mgr.rolling_summary  # covered by checkpoint
-        assert "gap1" in mgr.rolling_summary  # gap present via its summary
-        assert mgr.pending_checkpoints == []
-        assert mgr.dropped_count == len(msgs) - len(result)
-        # the recent window + anchor survive untouched
-        assert result[-1]["content"] == "继续"
 
-    def test_checkpoint_stays_pending_when_not_dropped(self):
-        """A checkpoint whose message is still in the keep window is not
-        consumed and not (yet) merged; all dropped content is summarized."""
-        cp = "尚未被压缩的报告"
-        self.mgr.record_checkpoint(cp)
-        msgs = [
+        second_round = [
             {"role": "system", "content": "sys"},
-            {"role": "user", "content": "old " + "a" * 4000},
-            {"role": "assistant", "content": "old answer " + "b" * 4000},
-            {"role": "user", "content": "new task"},
-            {"role": "assistant", "content": cp},
+            {"role": "user", "content": "t2 " + "a" * 3000},
+            {"role": "assistant", "content": "step2 " + "b" * 3000},
+            {"role": "user", "content": "anchor2"},
         ]
-        self.mgr.maybe_compact(msgs)
-        assert self.mgr.dropped_count > 0
-        assert self.mgr.pending_checkpoints == [cp]
-        assert cp not in self.mgr.rolling_summary
+        mgr.maybe_compact(second_round)
+
+        # 旧层原文保留在最前，新层追加在后，用分隔线隔开。
+        assert mgr.rolling_summary.startswith(layer_one)
+        assert "---" in mgr.rolling_summary
+        assert "LAYER#2" in mgr.rolling_summary
+        # 第二次只喂了新丢弃的内容，没有重新总结旧层。
+        assert calls[-1] != layer_one
+        assert "step2" in calls[-1]
 
     def test_summary_overflow_condenses_whole_summary(self):
-        """When checkpoints + gaps exceed summary_cap, the WHOLE summary is
+        """When the accumulated layers exceed summary_cap, the WHOLE summary is
         condensed in one lossy step (the only place detail decays)."""
 
         def identity_summarizer(text: str) -> str:
@@ -724,16 +839,13 @@ class TestMemoryManager:
         mgr = MemoryManager(
             token_budget=100,
             summary_cap=50,
-            soft_rounds=4,
             summarizer=identity_summarizer,
             snapshot_resolver=_test_snapshot_resolver,
         )
-        cp = "报告" * 200  # far over the 50-token cap by itself
-        mgr.record_checkpoint(cp)
         msgs = [
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "task " + "w" * 3000},
-            {"role": "assistant", "content": cp},
+            {"role": "assistant", "content": "报告" * 200},  # 远超 50-token cap
             {"role": "user", "content": "anchor"},
         ]
         mgr.maybe_compact(msgs)

@@ -6,6 +6,7 @@ import type {
   ChatItem,
   Conversation,
   DragParams,
+  DueMilestone,
   InitData,
   Message,
   Page,
@@ -64,6 +65,14 @@ export interface AppState {
   subagentItemByTurn: Record<string, string>;
   /** Operator task currently controlling the desktop (running only). */
   activeOperatorTaskId: string | null;
+  /** 到期/临近的目标节点提醒（启动时拉取，可手动关闭）。 */
+  dueMilestones: DueMilestone[];
+  /** Pending jump into the practice room (「考考我」/「基于刚才的文件出题」). */
+  practiceJump: {
+    kind: "note" | "kb" | "file";
+    sourceId: string;
+    autoStart: boolean;
+  } | null;
 }
 
 const INITIAL: AppState = {
@@ -93,6 +102,8 @@ const INITIAL: AppState = {
   subagents: {},
   subagentItemByTurn: {},
   activeOperatorTaskId: null,
+  dueMilestones: [],
+  practiceJump: null,
 };
 
 let state: AppState = INITIAL;
@@ -148,6 +159,13 @@ export const actions = {
       state: data.state || "main",
     });
     actions.hydrateSubagents(data.subagents || []);
+    set({ dueMilestones: data.due_milestones || [] });
+  },
+
+  dismissDueMilestone(key: string) {
+    set((s) => ({
+      dueMilestones: s.dueMilestones.filter((m) => m.key !== key),
+    }));
   },
 
   setState(next: WindowState | string) {
@@ -410,6 +428,39 @@ export const actions = {
     });
   },
 
+  /** 内联调研卡片的事件流：把子任务的结构化事件追加到最近一个仍在跑的
+   *  research 步骤上，让卡片和 SubagentList 显示同一个流。 */
+  appendResearchEvent(eventType: string, payload: Record<string, unknown>) {
+    // 只接结构化事件；progress 走 updateResearchProgress 的单行通道
+    if (
+      !["thinking", "tool_call", "tool_result", "say", "notice"].includes(eventType)
+    ) {
+      return;
+    }
+    set((s) => {
+      const chat = s.chat.slice();
+      for (let i = chat.length - 1; i >= 0; i--) {
+        const it = chat[i];
+        if (it.kind !== "activity") continue;
+        const steps = it.steps.slice();
+        for (let j = steps.length - 1; j >= 0; j--) {
+          if (steps[j].category === "research" && steps[j].status === "pending") {
+            const events = [...(steps[j].events ?? []), {
+              event_id: `${steps[j].id}-${(steps[j].events?.length ?? 0) + 1}`,
+              type: eventType,
+              payload,
+            }];
+            steps[j] = { ...steps[j], events: events.slice(-240) };
+            chat[i] = { ...it, steps };
+            return { chat };
+          }
+        }
+        break;
+      }
+      return {};
+    });
+  },
+
   /** Sub-agent live progress: update the latest still-running research step's
    *  rolling status line. One line replaces the previous — visible motion
    *  without a growing list (no noise). */
@@ -467,8 +518,13 @@ export const actions = {
           view.label = undefined;
         }
       }
+      // 折叠态那行滚动状态：progress/activity 是旧通道，tool_call/tool_result
+      // 是新的事件流通道（都带 label），一并用来更新。
       if (
-        (ev.event_type === "progress" || ev.event_type === "activity") &&
+        (ev.event_type === "progress" ||
+          ev.event_type === "activity" ||
+          ev.event_type === "tool_call" ||
+          ev.event_type === "tool_result") &&
         typeof payload.label === "string" &&
         payload.label
       ) {
@@ -488,7 +544,7 @@ export const actions = {
           payload,
           timestamp: ev.timestamp,
         },
-      ].slice(-50);
+      ].slice(-240);
 
       const subagents = { ...s.subagents, [ev.task_id]: view };
       const patch: Partial<AppState> = {
@@ -665,6 +721,26 @@ export const actions = {
     set((s) => ({ settings: { ...s.settings, [key]: value } }));
   },
 
+  /* ── Practice room jump (「考考我」 chips / 精读联动) ── */
+  startPractice(payload: {
+    kind: "note" | "kb" | "file";
+    sourceId: string;
+    autoStart?: boolean;
+  }) {
+    set({
+      practiceJump: {
+        kind: payload.kind,
+        sourceId: payload.sourceId,
+        autoStart: payload.autoStart ?? true,
+      },
+      page: "study",
+    });
+  },
+
+  clearPracticeJump() {
+    set({ practiceJump: null });
+  },
+
   /* ── Scenes ── */
   setScenes(list: Scene[]) {
     set({ scenes: list });
@@ -734,6 +810,11 @@ export function dispatch(ev: AgentEvent) {
       break;
     case "subagent_event":
       actions.applySubagentEvent(ev);
+      // 同一条事件也喂给内联调研卡片（任务块 + 会话内联卡片保持一致）
+      actions.appendResearchEvent(
+        ev.event_type,
+        (ev.payload || {}) as Record<string, unknown>,
+      );
       break;
     case "response_chunk":
       actions.upsertStreaming(ev.chunk || "");
@@ -787,12 +868,6 @@ export function dispatch(ev: AgentEvent) {
       // Handled in the PTT hook (needs the active input element ref).
       // Re-dispatch so a global listener can pick it up.
       window.dispatchEvent(new CustomEvent(`stt-${ev.type === "stt_partial" ? "partial" : "final"}`, { detail: ev.text }));
-      break;
-    case "perf_report":
-      actions.showToast(ev.message || "你有新的电脑性能报告请查收", ev.conv_id);
-      break;
-    case "briefing_report":
-      actions.showToast(ev.message || "晨间播报已生成，点击查看", ev.conv_id);
       break;
     case "conversations_changed":
       break; // caller refreshes via api

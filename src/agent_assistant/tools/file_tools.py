@@ -129,6 +129,16 @@ class _UnsupportedBinaryError(Exception):
     pass
 
 
+# Public aliases — practice room reuses the extraction pipeline.
+UnsupportedBinaryError = _UnsupportedBinaryError
+
+
+def extract_file_text(p: Path) -> tuple[str, dict[str, Any]]:
+    """Public wrapper over the internal extraction pipeline (PDF/Word/Excel/
+    PPT/RTF → text; plain text read with encoding detection)."""
+    return _extract_file_text(p)
+
+
 def _extract_pdf(p: Path) -> tuple[str, dict[str, Any]]:
     try:
         import fitz  # PyMuPDF

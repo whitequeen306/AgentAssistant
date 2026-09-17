@@ -35,7 +35,11 @@ from agent_assistant.research.run_store import (
 from agent_assistant.tools.base import Tool, ToolParameter, ToolResult
 from agent_assistant.tools.registry import ToolRegistry
 from agent_assistant.tools.save_note import SaveNoteTool
-from agent_assistant.tools.web_tools import ReadPageTool, WebSearchTool
+from agent_assistant.tools.web_tools import (
+    ReadDocumentTool,
+    ReadPageTool,
+    WebSearchTool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -210,23 +214,29 @@ class _HostCircuitBreaker:
 
     A host that keeps timing out / anti-bot walling (r.jina.ai, web.archive.org,
     sogou…) used to eat turn after turn: the model was told "try another URL"
-    and retried the SAME host with a different path. After ``FAIL_THRESHOLD``
-    consecutive failures the circuit opens for the rest of the run and the
-    model gets an explicit "this host is dead, pick another source" error.
+    and retried the SAME host with a different path. After the threshold is hit
+    the circuit opens for the rest of the run and the model gets an explicit
+    "this host is dead, pick another source" error.
     A success resets the counter (flaky ≠ dead).
+
+    硬失败与软失败**分开计数**，理由见 SOFT_CATEGORIES 的注释。
     """
 
-    FAIL_THRESHOLD = 2
-    TRACKED_TOOLS = ("read_page", "extract_content")
-    # Soft failures mean the host RESPONDED (page fetched, just nothing
-    # readable / blocked by us) — proof of life, not a dead host. Only hard
-    # failures (timeout / connection / HTTP error) count toward the circuit.
+    FAIL_THRESHOLD = 2       # 硬失败：超时 / 连接失败 / HTTP 错误
+    SOFT_FAIL_THRESHOLD = 3  # 软失败：页面抓到了但读不出内容（JS 渲染 / PDF / 反爬）
+    TRACKED_TOOLS = ("read_page", "extract_content", "read_document")
+    # 软失败表示 host 有响应，但**内容拿不到**。这正是院校官网的典型形态
+    # （异步树 / PDF / 反爬）。早期实现把它算作成功来"证明 host 活着"，结果
+    # 每次失败都清零计数 → 熔断永不触发 → 子 Agent 拿着 URL 无限重试
+    # （实测某次调研 12 轮里 read_page 被调 38 次，web_search 只调了 1 次）。
+    # 「是否算失败」和「是否计入熔断」是两件事，必须拆开。
     SOFT_CATEGORIES = frozenset({
         "extract_fail", "empty_html", "serp_fetch", "ssrf", "host_circuit_open",
     })
 
     def __init__(self) -> None:
         self._fails: dict[str, int] = {}
+        self._soft: dict[str, int] = {}
 
     @staticmethod
     def _host(args: dict[str, Any]) -> str | None:
@@ -244,11 +254,17 @@ class _HostCircuitBreaker:
         if tool not in self.TRACKED_TOOLS:
             return None
         host = self._host(args)
-        if host and self._fails.get(host, 0) >= self.FAIL_THRESHOLD:
+        if not host:
+            return None
+        if self._fails.get(host, 0) >= self.FAIL_THRESHOLD:
+            return host
+        if self._soft.get(host, 0) >= self.SOFT_FAIL_THRESHOLD:
             return host
         return None
 
-    def record(self, tool: str, args: dict[str, Any], ok: bool) -> None:
+    def record(
+        self, tool: str, args: dict[str, Any], ok: bool, *, soft: bool = False
+    ) -> None:
         if tool not in self.TRACKED_TOOLS:
             return
         host = self._host(args)
@@ -256,12 +272,25 @@ class _HostCircuitBreaker:
             return
         if ok:
             self._fails.pop(host, None)
+            self._soft.pop(host, None)
+        elif soft:
+            self._soft[host] = self._soft.get(host, 0) + 1
         else:
             self._fails[host] = self._fails.get(host, 0) + 1
 
 
 # Per-turn LLM timeout (seconds). Tests may monkeypatch this lower.
 _LLM_TURN_TIMEOUT_S = 120
+
+#: 调研深度 → 轮次预算。**由主 Agent 按任务难度选择**（agentic：不写死流程）。
+#: 早期实现对所有调研一律给 60 轮，结果"查一所学校的分数线"和"四校全字段对比"
+#: 花一样的钱——更糟的是模型会把预算当目标，跑满为止。分档后快速任务几十秒收工。
+RESEARCH_DEPTH_TURNS: dict[str, int] = {
+    "quick": 8,       # 单一事实 / 确认一个页面上的数字
+    "standard": 20,   # 常规多源调研（默认）
+    "deep": 45,       # 多实体横向对比 / 需要交叉核验与冲突标注
+}
+DEFAULT_RESEARCH_DEPTH = "standard"
 
 # Wrap-up mode: with this many turns left we tell the model to stop opening
 # new threads; the very last turn runs WITHOUT tools so the run always ends
@@ -399,6 +428,40 @@ def _progress_label(tool: str, args: dict[str, Any]) -> str:
     if tool == "save_note":
         return "保存笔记"
     return tool
+
+
+def _url_key(tool: str, args: dict[str, Any]) -> str | None:
+    """规范化 URL，用于「同一个 URL 别读两遍」的去重键。"""
+    if tool not in ("read_page", "extract_content", "read_local_source"):
+        return None
+    url = str(args.get("url") or args.get("path") or "").strip()
+    if not url:
+        return None
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+
+        p = urlsplit(url)
+        return urlunsplit(
+            (p.scheme, p.netloc.lower(), p.path.rstrip("/"), p.query, "")
+        )
+    except Exception:  # noqa: BLE001 — 兜底用原串
+        return url
+
+
+def _compact_tool_args(tool: str, args: dict[str, Any]) -> dict[str, str]:
+    """卡片的流式展示只需要最关键的参数，不要把整个 args 塞进事件里。"""
+    if tool == "web_search":
+        return {"query": str(args.get("query") or "")[:120]}
+    if tool in ("read_page", "extract_content", "read_local_source", "read_document"):
+        return {"url": str(args.get("url") or args.get("path") or "")[:160]}
+    if tool == "save_note":
+        return {"title": str(args.get("title") or "")[:80]}
+    if tool == "search_papers":
+        return {"query": str(args.get("query") or "")[:120]}
+    out: dict[str, str] = {}
+    for key, value in list(args.items())[:2]:
+        out[key] = str(value)[:80]
+    return out
 
 
 def _emit_progress(tool: str, label: str, turn: int, max_turns: int) -> None:
@@ -572,9 +635,12 @@ def run_research_subagent(
     local_sources: list[LocalSource] | None = None,
     use_knowledge: bool = False,
     resume_from: str | None = None,
+    track: str | None = None,
+    depth: str | None = None,
     *,
     cancel_check: Callable[[], bool] | None = None,
     on_progress: Callable[[str, str, int, int], None] | None = None,
+    on_event: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> ToolResult:
     """Run the deep-research sub-agent with its own agentic loop + L1/L2 artifacts.
 
@@ -585,8 +651,28 @@ def run_research_subagent(
     ``cancel_check`` / ``on_progress`` are injected by the SubagentManager so
     each task has its own cancellation token and task-scoped progress events;
     when omitted, the legacy turn-scoped cancel and UI push are used.
+
+    ``track`` (考研 / 考公 / 求职 …) selects a ``TrackSpec`` whose output
+    template is appended to the sub-agent prompt. ``None`` falls back to the
+    user's active track, then to the default — so callers never branch on it.
+
+    ``on_event`` (optional) is a **structured** stream for the UI research
+    card: ``("thinking", {text, turn})``、``("tool_call", {tool, label, args})``、
+    ``("tool_result", {tool, ok, count, sources})``、``("notice", {text})``。
+    Distinct from ``on_progress``, which stays as the coarse one-line status
+    (and the legacy UI push) — both may fire for the same step.
+
+    ``depth`` (quick / standard / deep) 决定轮次预算；未传则用 standard。
+    显式 ``max_turns`` 优先于 ``depth``（测试与特殊调用方需要精确控制）。
     """
-    max_turns = max_turns or settings.subagent_max_turns
+    from agent_assistant.goals.registry import active_cycle_year, resolve_spec
+
+    depth_key = (depth or DEFAULT_RESEARCH_DEPTH).strip().lower()
+    if depth_key not in RESEARCH_DEPTH_TURNS:
+        depth_key = DEFAULT_RESEARCH_DEPTH
+    if max_turns is None:
+        max_turns = RESEARCH_DEPTH_TURNS[depth_key]
+    max_turns = max(2, min(int(max_turns), settings.subagent_max_turns))
 
     if cancel_check is None:
         from agent_assistant.agent.cancellation import is_cancelled as _legacy_cancelled
@@ -601,6 +687,15 @@ def run_research_subagent(
                 logger.exception("research on_progress callback raised")
             return
         _emit_progress(tool, label, turn, total)
+
+    def _emit_event(kind: str, **payload: Any) -> None:
+        """Structured stream event for the UI card. Never fatal."""
+        if on_event is None:
+            return
+        try:
+            on_event(kind, payload)
+        except Exception:
+            logger.exception("research on_event callback raised")
     sources = list(local_sources or [])
     run = ResearchRun(goal=goal)
 
@@ -608,6 +703,7 @@ def run_research_subagent(
     sub_registry = ToolRegistry()
     sub_registry.register(WebSearchTool())
     sub_registry.register(ReadPageTool())
+    sub_registry.register(ReadDocumentTool())
     sub_registry.register(ExtractContentTool())
     sub_registry.register(SaveNoteTool())
     try:
@@ -645,10 +741,37 @@ def run_research_subagent(
             "The user enabled the vector knowledge base. "
             "Call `search_knowledge` to retrieve relevant uploaded documents."
         )
+    track_spec = resolve_spec(track)
+    if track_spec is not None:
+        extras.append(
+            f"## 目标轨道：{track_spec.label}\n"
+            + track_spec.render_research_template(cycle_year=active_cycle_year())
+            + "\n\n对比表字段："
+            + "、".join(track_spec.output_fields)
+        )
     extras.append(
         "## Run artifacts\n"
         f"- L1 trace: `{run.trace_path}`\n"
         f"- L2 findings: `{run.findings_path}` (written when you finish)"
+    )
+    extras.append(
+        f"## Budget & stopping rule\n"
+        f"- depth={depth_key}, hard cap {max_turns} turns. The cap is a ceiling, "
+        "NOT a target — the budget you do not spend is the point.\n"
+        "- STOP AS SOON AS YOU CAN ANSWER THE GOAL. Stop early when: every "
+        "requested field has a sourced value, OR the remaining gaps need "
+        "private/paywalled data you cannot reach.\n"
+        "- Do NOT re-fetch a URL you already read, and do NOT re-run the same "
+        "query with synonyms. That is pure waste and it is detected: a repeated "
+        "URL is refused.\n"
+        "- If a source fails or yields nothing readable TWICE, switch to a "
+        "different source instead of retrying it. Report the gap honestly.\n"
+        "- Numbers that live in a table (招生人数 / 分数线 / 科目代码) are usually "
+        "in a PDF or image attachment, NOT in the HTML — when read_page returns "
+        "little or nothing, look for a linked .pdf / attachment and call "
+        "read_document. Documents are expensive: a few per run, never twice.\n"
+        "- A partial but sourced report delivered on turn 6 beats an exhaustive "
+        "one that runs out of budget and returns nothing."
     )
     system_content = build_research_system_prompt(extra="\n\n".join(extras))
 
@@ -677,6 +800,8 @@ def run_research_subagent(
     # Failures in this research run — fed back into each failed tool message.
     turn_failures: list[dict] = []
     breaker = _HostCircuitBreaker()
+    # 本次 run 内已抓取过的 URL —— 重复调用直接拒绝，防「同一个页面反复读」
+    visited_urls: set[str] = set()
     wrapup_injected = False
     # Context management: L1 summaries per tool call, for aging off old
     # tool results (see _age_off_tool_results).
@@ -712,6 +837,12 @@ def run_research_subagent(
             )
             _progress(
                 "notice", "预算收尾：整理已有材料，撰写报告", turn + 1, max_turns
+            )
+            _emit_event(
+                "notice",
+                text=f"预算收尾：剩余 {remaining} 轮，停止开新线索，开始撰写报告",
+                tone="warning",
+                turn=turn + 1,
             )
 
         # Last turn: withhold tools so the model can only write the report.
@@ -775,6 +906,17 @@ def run_research_subagent(
         choice = response.choices[0]
         message = choice.message
 
+        # 思考内容（DeepSeek thinking 模式）→ 卡片里的「思考」块
+        reasoning = getattr(message, "reasoning_content", None)
+        if isinstance(reasoning, str) and reasoning.strip():
+            _emit_event(
+                "thinking", text=reasoning.strip()[:1500], turn=turn + 1
+            )
+
+        # 模型边调工具边说话（少见）→ 也流出来，别让卡片只剩冷冰冰的工具行
+        if message.tool_calls and message.content and message.content.strip():
+            _emit_event("say", text=message.content.strip()[:800], turn=turn + 1)
+
         # Tool calls → execute, log L1, continue
         if message.tool_calls:
             messages.append(message.model_dump())
@@ -785,24 +927,41 @@ def run_research_subagent(
                 fn_args = _parse_tool_args(fn_args_raw)
 
                 _progress(fn_name, _progress_label(fn_name, fn_args), turn + 1, max_turns)
+                _emit_event(
+                    "tool_call",
+                    tool=fn_name,
+                    label=_progress_label(fn_name, fn_args),
+                    args=_compact_tool_args(fn_name, fn_args),
+                    turn=turn + 1,
+                )
                 blocked = breaker.blocked_host(fn_name, fn_args)
+                url_key = _url_key(fn_name, fn_args)
                 if blocked:
                     result = ToolResult.failure(
-                        f"host '{blocked}' already failed "
-                        f"{breaker.FAIL_THRESHOLD}x in a row this run "
-                        "(timeout/anti-bot) — circuit is OPEN for the rest of "
-                        "this run. Pick a DIFFERENT source/host; do not retry "
-                        "this one.",
+                        f"host '{blocked}' has already failed repeatedly this run "
+                        "(timeout / anti-bot / content not extractable) — circuit "
+                        "is OPEN for the rest of this run. Pick a DIFFERENT "
+                        "source/host; do not retry this one.",
                         error_category="host_circuit_open",
                     )
+                elif url_key and url_key in visited_urls:
+                    result = ToolResult.failure(
+                        f"'{url_key}' was already fetched in this run — its content "
+                        "is already in your context above. Do NOT fetch the same "
+                        "URL again; use what you already have, or pick a genuinely "
+                        "different source.",
+                        error_category="duplicate_fetch",
+                    )
                 else:
+                    if url_key:
+                        visited_urls.add(url_key)
                     result = sub_registry.execute(fn_name, fn_args_raw)
-                # Soft failures (page fetched but unreadable, SSRF/SERP blocks)
-                # prove the host is alive — treat as success for the circuit.
-                circuit_ok = result.ok or (
+                # 软失败（抓到页面但读不出内容）同样计入熔断 —— 对院校官网这类
+                # JS/PDF/反爬站点，换路径重试是无效的，必须换源。
+                soft_fail = (not result.ok) and (
                     result.error_category in _HostCircuitBreaker.SOFT_CATEGORIES
                 )
-                breaker.record(fn_name, fn_args, circuit_ok)
+                breaker.record(fn_name, fn_args, result.ok, soft=soft_fail)
                 if not result.ok:
                     turn_failures.append(
                         make_failure_entry(
@@ -822,6 +981,15 @@ def run_research_subagent(
                     result_dict = result.to_dict()
                 refs = extract_refs_from_tool_result(fn_name, result_dict)
                 summary = summarize_tool_result(fn_name, result_dict)
+                _emit_event(
+                    "tool_result",
+                    tool=fn_name,
+                    ok=bool(result.ok),
+                    turn=turn + 1,
+                    count=len(refs),
+                    sources=list(refs[:3]),
+                    text=(result.error or "")[:160] if not result.ok else "",
+                )
                 run.log_l1(
                     tool=fn_name,
                     args=fn_args,
@@ -1159,12 +1327,38 @@ class DispatchResearchTool(Tool):
                 ),
                 required=False,
             ),
+            ToolParameter(
+                name="depth",
+                type="string",
+                description=(
+                    "调研深度，自己按任务难度判断，不要一律用最重的："
+                    "quick=查一个事实/确认单个页面上的数字（8 轮）；"
+                    "standard=常规多源调研（20 轮，默认）；"
+                    "deep=多实体横向对比、需要交叉核验与冲突标注（45 轮）。"
+                    "预算不是目标——信息够了就让它早点收工，能 quick 就别 standard。"
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="track",
+                type="string",
+                description=(
+                    "目标轨道：postgrad(考研) / civil_service(考公) / job(求职)。"
+                    "选定后调研会按该场景的固定结构输出（列顺序、来源要求、"
+                    "冲突标注规则），例如考研择校会固定输出八列对比表。"
+                    "用户要做择校/选岗/选offer这类对比时务必传入；"
+                    "不传则自动使用用户当前启用的目标轨道。"
+                ),
+                required=False,
+            ),
         ]
 
     def execute(self, **kwargs: Any) -> ToolResult:
         goal: str = kwargs.get("goal", "").strip()
         context: str = kwargs.get("context", "").strip()
         resume_from = (kwargs.get("resume_from") or "").strip() or None
+        track = (kwargs.get("track") or "").strip() or None
+        depth = (kwargs.get("depth") or "").strip() or None
 
         if not goal:
             return ToolResult.failure("parameter 'goal' is required")
@@ -1192,7 +1386,7 @@ class DispatchResearchTool(Tool):
         # local sources / knowledge stay on the direct path (their one-shot
         # state lives on this thread).
         if not local_sources and not use_knowledge:
-            routed = self._execute_via_manager(goal, context, resume_from)
+            routed = self._execute_via_manager(goal, context, resume_from, track, depth)
             if routed is not None:
                 return routed
 
@@ -1202,6 +1396,8 @@ class DispatchResearchTool(Tool):
             local_sources=local_sources,
             use_knowledge=use_knowledge,
             resume_from=resume_from,
+            track=track,
+            depth=depth,
         )
 
     @staticmethod
@@ -1209,6 +1405,8 @@ class DispatchResearchTool(Tool):
         goal: str,
         context: str,
         resume_from: str | None,
+        track: str | None = None,
+        depth: str | None = None,
     ) -> ToolResult | None:
         """Route one research task through the SubagentManager.
 
@@ -1230,6 +1428,8 @@ class DispatchResearchTool(Tool):
                 spec_context["background"] = context
             if resume_from:
                 spec_context["resume_from"] = resume_from
+            if track:
+                spec_context["track"] = track
             title = goal if len(goal) <= 40 else goal[:39] + "…"
             spec = SubagentSpec.create(
                 conversation_id=execution_context.conversation_id,

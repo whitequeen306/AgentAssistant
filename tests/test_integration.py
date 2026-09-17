@@ -743,22 +743,6 @@ class TestHotkeyCombo:
         assert listener._recording is True
 
 
-# ─── Perf Monitor Thresholds (J18) ───────────────────────────────────────────
-
-
-class TestPerfThresholds:
-    """J18: Thresholds lowered to 80%/5s."""
-
-    def test_default_thresholds(self):
-        from agent_assistant.daemon.perf_monitor import PerfThresholds
-
-        t = PerfThresholds()
-        assert t.cpu_percent == 80.0
-        assert t.memory_percent == 80.0
-        assert t.sustained_seconds == 5.0
-        assert t.check_interval == 2.0
-
-
 # ─── STT Config (J20) ────────────────────────────────────────────────────────
 
 

@@ -1,62 +1,102 @@
-# 01. Purpose (项目目的)
+# 01. Purpose（项目定位）
+
+> 本文件是项目的定位基准。写商业计划书、路演稿、README 时，以此文件为准。
 
 ## What we're building
 
-AgentAssistant — an **open-source** personal desktop Agentic assistant for Windows. The assistant lives on the user's PC and helps with everyday tasks through natural conversation (text or voice). It is **agentic by design**: the model decides what to do and which tools to call; there are no hardcoded pipelines. Distributed as open-source for self-hosting (single-user per instance); a freemium cloud layer is a possible future path but not the current focus.
+**AgentAssistant —— 面向大学生学习科研场景的桌面智能体。**
 
-## Why (用户愿景)
+它运行在学生自己的 Windows 电脑上，覆盖"资料获取 → 精读理解 → 调研写作 → 沉淀入库 → 自测复习"的完整学习闭环：
 
-The user wants a desktop companion that:
+1. **获取**：浏览器扩展一键剪藏网页、研招网页面、经验贴；本地 PDF / Word / PPT / 代码直接右键交给它
+2. **精读**：右键任意文件 → 助手边读边讲，读完后主动给出后续学习选项
+3. **调研**：`dispatch_research` 派出独立调研子 Agent，多轮搜索 + 交叉核验 → 生成带来源链接的报告
+4. **沉淀**：笔记（Markdown）+ 向量知识库（RAG），所有资料留在本机
+5. **自测**：练习室按材料自动出题、本地判分、逐题解析
+6. **复习**：Leitner 五盒间隔复习调度，到期主动回炉
 
-- Translates / summarizes / answers questions about anything selected (right-click toolbox)
-- Opens apps and switches "scenes" (work mode, game mode) with one command
-- Researches topics and produces real, source-annotated reports
-- Briefs them every morning on newly coined AI technical terms and hot GitHub projects (not industry news)
-- Watches PC performance and proactively suggests fixes
-- Is interacted with via voice (push-to-talk for quick commands; continuous-call for long conversations)
-- Presents itself as a fluid Dynamic-Island-style floating UI (liquid glass, light/dark, edge-collapse, drag-out)
+一句话定位：**不是又一个聊天窗口，而是把"读过的东西"变成"记得住的东西"的学习闭环。**
+
+## Why（问题背景）
+
+大学生在学习与科研入门阶段有三类系统性困难，现有工具都只解决其中一小段：
+
+### 痛点一：信息获取成本极高，且没有工具真正帮学生做"决策"
+
+以考研择校为例。一个学生要对比 5 所院校 × 3 个专业，需要：
+
+- 逐个打开各校研招网，在**异步加载的树形目录**里层层点开（华东师大、哈工程等院校的专业目录均为 JS 动态渲染）
+- 下载多份 PDF 版招生目录与参考书目，PDF 中的科目代码常为**乱码编码**，无法直接复制
+- 手工摘录、对齐"招生人数 / 考试科目代码 / 参考书目 / 近三年分数线"四类字段
+- 每年 9 月目录更新后，整套流程**重做一遍**
+
+本项目在开发者的真实考研准备过程中，为完成上述工作累计编写了 **23 个抓取脚本（1384 行）、产生 242 个中间文件**，覆盖哈尔滨工业大学（本部/深圳）、哈尔滨工程大学、华东师范大学、东北大学等院校与中国教育在线数据源。
+
+**这件事本该由 Agent 完成，而不是由学生写脚本完成。** 这正是本项目的起点。
+
+### 痛点二：读完之后没有沉淀，学过的东西会忘
+
+通用大模型对话止于"读"和"问"。学生读完一篇论文、一份课件，收获停留在一次对话里，
+不会自动变成笔记、不会变成题库、更不会在遗忘临界点回来找他。
+
+### 痛点三：学习数据上云的顾虑
+
+学习资料（论文、笔记、错题、个人简历）高度私密。把这些数据交给云端服务，
+学校和学生都存在顾虑。本项目的答案是**本地优先**：数据不出本机。
 
 ## Core philosophy
 
-**Model-heavy, flow-light (Agentic)** — let the agent autonomously decide tool calls and orchestration. The framework only "safely executes the model's decisions"; all flow orchestration is delegated to model reasoning. Inspired by Claude Code source.
+**Model-heavy, flow-light（Agentic）** —— 由模型自主决定工具调用与编排，框架只负责安全执行。
+工具编排全部交给模型推理，不做硬编码流水线。
 
-See `02-philosophy.md` for the full principles.
+详见 `02-philosophy.md`。
 
 ## Target user
 
-A single user (the developer/owner) on their personal Windows PC. Not a multi-tenant product. This shapes decisions: personal-scale cost is OK, no auth/multi-tenancy needed, preferences are personal.
+**主要用户：有明确学习目标的大学生**（考研备考、专业课学习、科研入门、毕设）。
+
+**次要用户：需要本地化资料处理的研究者与教师。**
+
+部署形态：本地桌面应用，单机单用户，数据完全本地化。
+（多用户 / 云端同步为后续规划，见 Out of scope。）
+
+**为什么是本地优先：**
+- 学习数据私密，本地存储天然合规
+- 桌面 Agent 可访问本地文件与真实桌面操作（UIA），能力边界大于网页应用
+- 无服务端成本，个人与小规模部署可行
 
 ## Success criteria
 
-- The 10 features in `04-features.md` all work end-to-end
-- The agent picks tools by reasoning, not by hardcoded if/else (verifiable: read the code, no flow-orchestration branches)
-- Dangerous ops always confirm
-- The Dynamic-Island UI feels fluid (liquid glass, smooth spring animations, edge-collapse works)
-- Voice interaction is usable (push-to-talk low-latency; continuous-call acceptable latency)
+- 学习闭环六个环节端到端可用（获取 / 精读 / 调研 / 沉淀 / 自测 / 复习）
+- 工具调用由模型推理决定，而非硬编码分支（可通过阅读代码验证）
+- 危险操作始终需要用户确认
+- 关键效率指标可量化：例"完成一次 5 校择校调研的耗时"
+- 关键效果指标可量化：例"7 天后知识点回忆正确率"
 
-## Out of scope (this phase)
+## Out of scope（当前阶段）
 
-- **WeChat / cross-app搬运** — deferred to a later phase; `save_note` is the local entry point
-- **Personal knowledge base RAG** — later phase; `save_note` writes Markdown that future RAG will index
-- **Native realtime voice model** — use STT+TTS pipeline first; switch to a realtime voice model later only if latency is unbearable (pipeline architecture stays the same)
-- **Multi-user / auth / cloud sync** — personal single-user, all local
+- **多用户 / 鉴权 / 云同步** —— 本地单用户优先；云端为后续规划
+- **原生实时语音模型** —— 当前用 STT + TTS 管线，架构可平滑切换
+- **跨端（macOS / 移动端）** —— 当前仅 Windows，跨端为后续规划
 
 ## Key decisions already made
 
-| Decision | Choice | Rationale |
+| 决策项 | 选择 | 理由 |
 |---|---|---|
-| Main LLM | deepseek-v4-pro | strong + Chinese-capable; test function-calling maturity first |
-| Implementation language | Python | richest ecosystem, full Windows automation libs |
-| Voice wake | push-to-talk (primary) + continuous-call (secondary) | push-to-talk is simple/low-latency; continuous-call for long hands-free interaction |
-| Web search | SearXNG (self-hosted, primary) + Tavily (fallback) | free unlimited local; Tavily ~1000/month free fallback |
-| Front-end UI | pywebview + WebView2 + HTML/CSS/JS | Python-native, lightest; Chromium supports backdrop-filter/SVG liquid glass |
-| Sub-agent count | 1 (deep research) | morning briefing reuses it; don't over-engineer |
+| 主模型 | deepseek 系列 | 中文能力强、成本低、function-calling 成熟 |
+| 实现语言 | Python | 生态最全，Windows 自动化库完整 |
+| 语音 | 按键说话（主）+ 持续通话（辅） | 按键说话低延迟；持续通话用于长对话 |
+| 网页搜索 | 博查 + Bing / arXiv / Semantic Scholar | 国内可直连 + 学术源覆盖 |
+| 前端 | pywebview + WebView2 + React/TS | 单文件构建，无需 Node 即可运行 |
+| 向量库 | ChromaDB（混合检索） | 本地部署简单，支持混合检索 |
+| 复习调度 | Leitner 五盒 | 简单、可解释、可测试，无需 FSRS 调参 |
 
 ## Project metadata
 
-- **Project name**: AgentAssistant
-- **Positioning**: Open-source personal desktop Agentic assistant (self-hosted, single-user per instance)
-- **Main LLM**: deepseek-v4-pro
-- **Implementation language**: Python
-- **Voice strategy**: push-to-talk (primary); continuous-call (5.10) secondary
-- **Platform**: Windows
+- **项目名称**：AgentAssistant
+- **定位**：面向大学生学习科研场景的本地优先桌面智能体
+- **核心差异**：学习闭环（精读 → 调研 → 沉淀 → 自测 → 间隔复习）+ 数据本地化
+- **主模型**：deepseek
+- **实现语言**：Python（后端）+ TypeScript（前端）
+- **平台**：Windows（跨端规划中）
+- **许可**：MIT

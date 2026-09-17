@@ -48,7 +48,7 @@ SUCCESS_DATA = {
 def test_completed_result_maps_report_without_copying_into_summary(monkeypatch) -> None:
     captured = {}
 
-    def fake_run(goal, context="", resume_from=None, *, cancel_check=None, on_progress=None):
+    def fake_run(goal, context="", resume_from=None, track=None, depth=None, *, cancel_check=None, on_progress=None, on_event=None):
         captured["goal"] = goal
         captured["context"] = context
         captured["cancel_check"] = cancel_check
@@ -78,7 +78,7 @@ def test_completed_result_maps_report_without_copying_into_summary(monkeypatch) 
 
 
 def test_failure_maps_partial_result_and_resume_artifacts(monkeypatch) -> None:
-    def fake_run(goal, context="", resume_from=None, *, cancel_check=None, on_progress=None):
+    def fake_run(goal, context="", resume_from=None, track=None, depth=None, *, cancel_check=None, on_progress=None, on_event=None):
         return ToolResult.failure(
             "sub-agent LLM timed out twice at turn 9/60",
             error_category="subagent_timeout",
@@ -93,7 +93,7 @@ def test_failure_maps_partial_result_and_resume_artifacts(monkeypatch) -> None:
 
 
 def test_failure_with_salvage_data_preserves_findings(monkeypatch) -> None:
-    def fake_run(goal, context="", resume_from=None, *, cancel_check=None, on_progress=None):
+    def fake_run(goal, context="", resume_from=None, track=None, depth=None, *, cancel_check=None, on_progress=None, on_event=None):
         return ToolResult(
             ok=False,
             error="timeout",
@@ -117,7 +117,7 @@ def test_failure_with_salvage_data_preserves_findings(monkeypatch) -> None:
 def test_cancelled_run_maps_to_cancelled_result(monkeypatch) -> None:
     controls = make_controls()
 
-    def fake_run(goal, context="", resume_from=None, *, cancel_check=None, on_progress=None):
+    def fake_run(goal, context="", resume_from=None, track=None, depth=None, *, cancel_check=None, on_progress=None, on_event=None):
         controls.cancel_event.set()
         return ToolResult.failure(
             "research cancelled by user", error_category="user_cancelled"
@@ -131,7 +131,7 @@ def test_cancelled_run_maps_to_cancelled_result(monkeypatch) -> None:
 def test_two_parallel_researchers_use_distinct_cancel_and_progress(monkeypatch) -> None:
     seen: dict[str, dict] = {}
 
-    def fake_run(goal, context="", resume_from=None, *, cancel_check=None, on_progress=None):
+    def fake_run(goal, context="", resume_from=None, track=None, depth=None, *, cancel_check=None, on_progress=None, on_event=None):
         on_progress("web_search", f"搜索 {goal}", 1, 60)
         seen[goal] = {"cancelled": cancel_check()}
         return ToolResult.success(data=dict(SUCCESS_DATA))
@@ -164,7 +164,7 @@ def test_two_parallel_researchers_use_distinct_cancel_and_progress(monkeypatch) 
 def test_continue_instruction_and_resume_from_flow_into_run(monkeypatch) -> None:
     captured = {}
 
-    def fake_run(goal, context="", resume_from=None, *, cancel_check=None, on_progress=None):
+    def fake_run(goal, context="", resume_from=None, track=None, depth=None, *, cancel_check=None, on_progress=None, on_event=None):
         captured["context"] = context
         captured["resume_from"] = resume_from
         return ToolResult.success(data=dict(SUCCESS_DATA))

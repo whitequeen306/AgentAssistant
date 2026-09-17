@@ -17,7 +17,7 @@ def launch_ui(with_daemon: bool = False, pending_file: str | None = None) -> Non
     """Launch the Dynamic-Island UI with full agent backend.
 
     Args:
-        with_daemon: J5 — start background daemon (perf, briefing, hotkey)
+        with_daemon: J5 — start background daemon (context menus, hotkey)
                      alongside the UI. ``main()`` always passes True.
         pending_file: J23 — right-click path to invoke once the UI loads
                       (set by main.py --right-click when no instance runs).
@@ -26,18 +26,40 @@ def launch_ui(with_daemon: bool = False, pending_file: str | None = None) -> Non
     from agent_assistant.agent.pool import AgentPool
     from agent_assistant.config import apply_reasoning_effort, settings
     from agent_assistant.ipc import IPCServer
+    from agent_assistant.llm.client import llm_client
     from agent_assistant.tools.register import register_all_tools
     from agent_assistant.ui.bridge import api_bridge
     from agent_assistant.ui.store import ui_store
     from agent_assistant.ui.window import ui_window
 
-    # Validate config
+    settings.ensure_dirs()
+
+    # 已移除的晨间播报/性能检测功能留下的专用会话 —— 启动时幂等清理。
+    _retired = ui_store.purge_retired_report_conversations()
+    if _retired:
+        logger.info("Purged %d retired report conversation(s)", _retired)
+
+    # §5.5 回灌：设置页保存的 Provider 配置持久化在 SQLite，重启后先于 .env
+    # 生效（否则改过的 Key/模型名会静默回落到 .env）。
+    _stored_key = ui_store.get_setting("deepseek_api_key")
+    _stored_url = ui_store.get_setting("deepseek_base_url")
+    _stored_model = ui_store.get_setting("deepseek_model")
+    if _stored_key:
+        settings.deepseek_api_key = _stored_key
+    if _stored_url:
+        settings.deepseek_base_url = _stored_url
+    if _stored_model:
+        settings.deepseek_model = _stored_model
+        llm_client.model = _stored_model
+
+    # NOTE: a missing API key must NOT block startup — the user should be able
+    # to open the app, browse notes / practice / tracks and configure the model
+    # later from 设置 → 模型配置. The real guard lives in LLMClient, so only
+    # model-backed actions (chat, research, grading) raise a friendly prompt.
     if not settings.deepseek_api_key:
-        print("Error: DEEPSEEK_API_KEY not set. Create a .env file.")
-        sys.exit(1)
+        logger.warning("模型 API Key 未配置：软件可正常浏览，聊天等需要模型的功能会提示前往「设置 → 模型配置」填写。")
 
     # Initialize backend
-    settings.ensure_dirs()
     register_all_tools()
 
     # Wire UI confirm gate (save_note / kill_process / dangerous ops).
@@ -48,9 +70,6 @@ def launch_ui(with_daemon: bool = False, pending_file: str | None = None) -> Non
     # Event forwarding to UI — one callback shared by every per-conv loop.
     def on_agent_event(event: AgentEvent) -> None:
         # J22: Forward ALL event types to UI (was only tool_call/tool_result)
-        if api_bridge.report_silent:
-            # Background reports must not stream into the current view.
-            return
         identity = {
             "conversation_id": event.conversation_id,
             "parent_turn_id": event.parent_turn_id,

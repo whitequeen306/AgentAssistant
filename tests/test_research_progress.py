@@ -405,6 +405,64 @@ class TestProgressEvents:
         assert progress[0]["turn"] == 1
         assert progress[0]["max_turns"] == 5
 
+    def test_structured_event_stream(self, tmp_data_dir):
+        """on_event 必须流出 thinking / tool_call / tool_result，供卡片实时展示。"""
+        stream: list[tuple[str, dict]] = []
+        responses = iter([
+            _tool_call_response("web_search", '{"query": "东北大学2026招生目录"}', "c1"),
+            _final_response("done"),
+        ])
+        with patch.object(
+            research.llm_client, "chat", side_effect=lambda **kw: next(responses)
+        ), patch(
+            "agent_assistant.tools.web_tools.WebSearchTool.execute",
+            return_value=ToolResult.success(
+                data={"results": [{"title": "t", "url": "https://yz.neu.edu.cn/a.htm"}]}
+            ),
+        ):
+            result = research.run_research_subagent(
+                "goal", max_turns=5, on_event=lambda k, p: stream.append((k, p))
+            )
+
+        assert result.ok
+        kinds = [k for k, _ in stream]
+        assert "tool_call" in kinds
+        assert "tool_result" in kinds
+
+        call = next(p for k, p in stream if k == "tool_call")
+        assert call["tool"] == "web_search"
+        assert call["label"] == "搜索：东北大学2026招生目录"
+        assert call["args"] == {"query": "东北大学2026招生目录"}
+
+        done = next(p for k, p in stream if k == "tool_result")
+        assert done["tool"] == "web_search"
+        assert done["ok"] is True
+        assert done["count"] >= 1
+        assert "https://yz.neu.edu.cn/a.htm" in done["sources"]
+
+    def test_thinking_emitted_when_model_reasons(self, tmp_data_dir):
+        stream: list[tuple[str, dict]] = []
+        thinking_resp = _final_response("done")
+        thinking_resp.choices[0].message.reasoning_content = "先查官网，再交叉核验"
+        responses = iter([thinking_resp])
+        with patch.object(
+            research.llm_client, "chat", side_effect=lambda **kw: next(responses)
+        ):
+            research.run_research_subagent(
+                "goal", max_turns=3, on_event=lambda k, p: stream.append((k, p))
+            )
+        thinking = [p for k, p in stream if k == "thinking"]
+        assert thinking and thinking[0]["text"] == "先查官网，再交叉核验"
+        assert thinking[0]["turn"] == 1
+
+    def test_event_stream_is_optional(self, tmp_data_dir):
+        """不传 on_event 时不得报错（旧调用方零改动）。"""
+        responses = iter([_final_response("done")])
+        with patch.object(
+            research.llm_client, "chat", side_effect=lambda **kw: next(responses)
+        ):
+            assert research.run_research_subagent("goal", max_turns=3).ok
+
     def test_progress_suppressed_in_background_report(self, tmp_data_dir):
         events: list[dict] = []
 

@@ -240,9 +240,14 @@ def test_operator_e2e_pause_resume_and_exclusive_desktop(tmp_path, monkeypatch) 
         assert resources.try_acquire(DESKTOP, "someone-else") is None
 
         manager.control("op-e2e", action="pause")
+        # _pause_task persists PAUSED *before* releasing leases, so poll both
+        # conditions together (deadline guards against a real leak).
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
-            if manager.get_task("op-e2e").status is SubagentStatus.PAUSED:
+            if (
+                manager.get_task("op-e2e").status is SubagentStatus.PAUSED
+                and resources.owner(DESKTOP) is None
+            ):
                 break
             time.sleep(0.02)
         assert manager.get_task("op-e2e").status is SubagentStatus.PAUSED

@@ -44,7 +44,11 @@ The background layer doesn't depend on an always-on LLM (expensive + slow); it's
 | Dispatch | `dispatch_research` | pull deep-research sub-agent |
 | Web | `web_search` / `read_page` | single-shot query / single-page read |
 
-**Deep-research sub-agent tools (4)**: `web_search` / `read_page` / `extract_content` / `save_note` + strong prompt + agent loop (with budget cap)
+**Deep-research sub-agent tools (5)**: `web_search` / `read_page` / `read_document` / `extract_content` / `save_note` + strong prompt + agent loop (with budget cap)
+
+`read_document` 是 `read_page` 的另一半：研招目录、分数线这类数据几乎只存在于
+PDF 附件与图片表格里，HTML 正文拿不到。它走「文本层 → 表格 → 扫描件 OCR」三级，
+并把表格排在正文之前输出，保证截断时先砍正文。
 
 **Shared tools**: `web_search` / `read_page` / `save_note` (main agent: single-shot; sub-agent: iterative)
 

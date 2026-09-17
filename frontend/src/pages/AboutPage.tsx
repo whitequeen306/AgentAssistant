@@ -24,7 +24,7 @@ export function AboutPage() {
             {model ? ` · ${model}` : ""}
           </p>
         </div>
-        <p className="text-sm text-secondary">Windows 桌面智能体助手 · Liquid Frost 玻璃拟态</p>
+        <p className="text-sm text-secondary">大学生自主学习智能体 · 本地优先 · Liquid Frost 玻璃拟态</p>
         <p className="text-xs text-tertiary">开源项目 · MIT License</p>
       </div>
     </section>

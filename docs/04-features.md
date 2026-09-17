@@ -54,7 +54,7 @@
 
 - **Goal**: produce a real, multi-source cross-verified, source-annotated report that distinguishes facts from inferences; the main agent only wants the final summary
 - **Strengthening path: method-level, not multi-layer sub-agents**: don't build a research→writer→reviewer three-layer pipeline (enterprise-grade, over-engineering for personal use); instead, one research sub-agent + strong toolset + strong prompt + internal iterative loop
-- **Sub-agent toolset**: `web_search` (SearXNG multi-source aggregation) / `read_page` / `extract_content` (precise extraction by CSS selector) / `save_note` (store intermediate findings)
+- **Sub-agent toolset**: `web_search` (AnySearch，带相关度闸门) / `read_page` / `read_document` (PDF 表格 + 扫描件 OCR) / `extract_content` (precise extraction by CSS selector) / `save_note` (store intermediate findings)
 - **Strong prompt (describes goal + quality bar, not steps)**:
   - Goal: produce a real, multi-source cross-verified, source-annotated report distinguishing facts vs inferences for X
   - Quality bar: self-check before finalizing — any unverified claims? contradictory sources? obvious gaps? if yes, search more; only finalize when confident

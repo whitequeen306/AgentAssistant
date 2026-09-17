@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { ArrowUp, Mic, Paperclip, Square, X } from "lucide-react";
+import { ArrowUp, Mic, Paperclip, Square, Telescope, X } from "lucide-react";
 import { ContextSourcesModal } from "@/components/ContextSourcesModal";
 import { cn } from "@/lib/cn";
 import { getApi } from "@/lib/bridge";
@@ -35,7 +35,11 @@ export function ChatInput({
 }: {
   active: boolean; // this input is the live dictation target
   placeholder: string;
-  onSend: (text: string, contextAttachment?: ContextAttachment) => void;
+  onSend: (
+    text: string,
+    contextAttachment?: ContextAttachment,
+    research?: boolean,
+  ) => void;
   compact?: boolean;
   autoFocus?: boolean;
   className?: string;
@@ -46,6 +50,7 @@ export function ChatInput({
 }) {
   const [value, setValue] = useState("");
   const [attachment, setAttachment] = useState<ContextAttachment>(EMPTY_ATT);
+  const [research, setResearch] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const dictating = useStore((s) => s.dictating);
   const thinking = useStore((s) => s.thinking);
@@ -85,7 +90,7 @@ export function ChatInput({
     if (!t) return;
     cmdHistory.push(t);
     cmdIndex = cmdHistory.length;
-    onSend(t, hasAttachment(attachment) ? attachment : undefined);
+    onSend(t, hasAttachment(attachment) ? attachment : undefined, research);
     setValue("");
     setAttachment(EMPTY_ATT);
     voiceBaseRef.current = "";
@@ -247,6 +252,22 @@ export function ChatInput({
             )}
           >
             <Paperclip className="h-[18px] w-[18px]" />
+          </button>
+        )}
+        {enableContextSources && (
+          <button
+            type="button"
+            onClick={() => setResearch((v) => !v)}
+            title={research ? "深度研究：开（本条消息将派出调研子代理）" : "深度研究：关"}
+            aria-pressed={research}
+            className={cn(
+              "interactive-morph inline-flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-pill border",
+              research
+                ? "border-accent/50 bg-accent-soft text-accent-strong"
+                : "border-border bg-transparent text-secondary hover:bg-surface-elevated hover:text-primary",
+            )}
+          >
+            <Telescope className="h-[18px] w-[18px]" />
           </button>
         )}
         <button

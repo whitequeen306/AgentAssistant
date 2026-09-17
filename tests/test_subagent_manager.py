@@ -180,7 +180,10 @@ def test_event_sequences_are_persisted_and_monotonic(store, tmp_path) -> None:
         manager.dispatch([make_spec("t1")])
         manager.await_tasks(["t1"], timeout=5)
         sequences = [sequence for _, sequence in seen]
-        assert sequences == sorted(sequences)
+        # Dispatch's queued-status emit races the worker's first activity
+        # emits across threads (frontend dedups by sequence), so delivery
+        # ORDER is not guaranteed — each sequence must appear exactly once.
+        assert sorted(sequences) == list(range(1, len(sequences) + 1))
         assert manager.last_sequence("t1") == max(sequences)
         stored = store.list_events("t1")
         assert [event.sequence for event in stored] == list(range(1, len(stored) + 1))

@@ -136,6 +136,8 @@ class SubagentManager:
         self._leases: dict[str, list[ResourceLease]] = {}
         self._active: set[str] = set()
         self._last_sequence: dict[str, int] = {}
+        # Serialises reserve → persist → publish inside emit(). See emit().
+        self._emit_lock = threading.Lock()
         self._shutdown = False
         self._scheduler = threading.Thread(
             target=self._scheduler_loop, daemon=True, name="subagent-scheduler"
@@ -609,40 +611,60 @@ class SubagentManager:
     # ─── Events ────────────────────────────────────────────────────────────
 
     def emit(self, task_id: str, event_type: str, payload: dict[str, Any]) -> None:
-        """Persist an ordered event, then publish it to the sink."""
-        with self._condition:
+        """Persist an ordered event, then publish it to the sink.
+
+        The whole sequence — reserve a sequence number → persist → publish —
+        runs under ``_emit_lock``. Without it, two threads can reserve 5 and
+        6 and then publish 6 before 5: the sink (and any UI replaying it)
+        observes out-of-order sequences. That is a real race, not a
+        theoretical one — it surfaced as an intermittent test failure that
+        moved around the subagent suites on every full run.
+
+        Sinks are therefore serialised. That is the correct trade for an
+        ordered event stream; sinks are expected to be cheap (append to a
+        list, push a UI event) and must not re-enter the manager.
+
+        ``_condition`` is deliberately NOT taken here: emit() is always
+        called from outside it, so keeping the two locks disjoint removes
+        any chance of a lock-ordering deadlock.
+        """
+        with self._emit_lock:
             spec = self._specs.get(task_id)
-        if spec is None:
-            spec = self.get_task(task_id)
             if spec is None:
+                try:
+                    spec = self._store.get_task(task_id)
+                except SubagentStoreError:
+                    spec = None
+                if spec is None:
+                    return
+            try:
+                reservation = self._store.next_sequence(task_id)
+                event = SubagentEvent(
+                    event_id=uuid.uuid4().hex,
+                    conversation_id=spec.conversation_id,
+                    parent_turn_id=spec.parent_turn_id,
+                    task_id=task_id,
+                    sequence=int(reservation),
+                    role=spec.role,
+                    type=event_type,
+                    payload=payload or {},
+                    timestamp=_utc_now(),
+                )
+                self._store.append_event(event, reservation=reservation)
+            except (SubagentStoreError, ValueError):
+                logger.warning(
+                    "Dropped unpersistable subagent event for %s", task_id[:8]
+                )
                 return
-        try:
-            reservation = self._store.next_sequence(task_id)
-            event = SubagentEvent(
-                event_id=uuid.uuid4().hex,
-                conversation_id=spec.conversation_id,
-                parent_turn_id=spec.parent_turn_id,
-                task_id=task_id,
-                sequence=int(reservation),
-                role=spec.role,
-                type=event_type,
-                payload=payload or {},
-                timestamp=_utc_now(),
-            )
-            self._store.append_event(event, reservation=reservation)
-        except (SubagentStoreError, ValueError):
-            logger.warning("Dropped unpersistable subagent event for %s", task_id[:8])
-            return
-        with self._condition:
             if event.sequence > self._last_sequence.get(task_id, 0):
                 self._last_sequence[task_id] = event.sequence
-        try:
-            self._sink(event)
-        except Exception:
-            logger.exception("Subagent event sink raised")
+            try:
+                self._sink(event)
+            except Exception:
+                logger.exception("Subagent event sink raised")
 
     def last_sequence(self, task_id: str) -> int:
-        with self._condition:
+        with self._emit_lock:  # same lock that writes it in emit()
             cached = self._last_sequence.get(task_id)
         if cached is not None:
             return cached

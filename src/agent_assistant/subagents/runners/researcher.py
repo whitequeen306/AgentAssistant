@@ -69,6 +69,8 @@ def researcher_runner(
     if continue_instruction:
         context_parts.append(f"Follow-up instruction from the user: {continue_instruction}")
     resume_from = str(spec.context.get("resume_from") or "").strip() or None
+    track = str(spec.context.get("track") or "").strip() or None
+    depth = str(spec.context.get("depth") or "").strip() or None
 
     def on_progress(tool: str, label: str, turn: int, max_turns: int) -> None:
         emit(
@@ -76,12 +78,19 @@ def researcher_runner(
             {"tool": tool, "label": label, "turn": turn, "max_turns": max_turns},
         )
 
+    def on_event(kind: str, payload: dict[str, Any]) -> None:
+        """结构化流事件（thinking / tool_call / tool_result / notice / say）。"""
+        emit(kind, payload)
+
     result = run_research_subagent(
         goal=spec.goal,
         context="\n\n".join(context_parts),
         resume_from=resume_from,
+        track=track,
+        depth=depth,
         cancel_check=controls.cancel_event.is_set,
         on_progress=on_progress,
+        on_event=on_event,
     )
 
     data: dict[str, Any] = result.data if isinstance(result.data, dict) else {}

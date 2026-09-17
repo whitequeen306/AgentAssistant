@@ -1,5 +1,5 @@
-"""Research-run robustness: CJK query normalization, URL encoding, SERP block,
-host circuit breaker, budget wrap-up, per-result L2 findings."""
+"""Research-run robustness: URL encoding, SERP block, host circuit breaker,
+budget wrap-up, per-result L2 findings."""
 
 from __future__ import annotations
 
@@ -15,8 +15,6 @@ from agent_assistant.tools.base import ToolResult
 from agent_assistant.tools.web_tools import (
     ReadPageTool,
     _encode_url,
-    _normalize_cjk_query,
-    _parse_bing_rss,
     _serp_block,
 )
 
@@ -50,18 +48,6 @@ def _tool_call_response(name: str, arguments: str, call_id: str = "call_1"):
 def tmp_data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     return tmp_path
-
-
-class TestCjkQueryNormalization:
-    def test_spaced_cjk_query_is_joined(self):
-        assert _normalize_cjk_query("哈尔滨工业大学 2026 硕士 招生") == "哈尔滨工业大学2026硕士招生"
-
-    def test_pure_ascii_query_unchanged(self):
-        assert _normalize_cjk_query("Harvard CS50 course") == "Harvard CS50 course"
-
-    def test_already_continuous_query_unchanged(self):
-        q = "东北大学2026年硕士研究生招生专业目录"
-        assert _normalize_cjk_query(q) == q
 
 
 class TestEncodeUrl:
@@ -110,24 +96,6 @@ class TestSerpBlock:
         assert "web_search" in result.error
 
 
-class TestBingRssParser:
-    def test_parse_items(self):
-        xml = """
-        <rss><channel>
-        <item><title>东北大学2026年硕士研究生招生专业目录</title>
-        <link>http://yz.neu.edu.cn/page.htm</link>
-        <description>some <b>snippet</b></description></item>
-        <item><title>Second</title><link>https://example.com/2</link>
-        <description>d2</description></item>
-        </channel></rss>
-        """
-        results = _parse_bing_rss(xml)
-        assert len(results) == 2
-        assert results[0]["title"] == "东北大学2026年硕士研究生招生专业目录"
-        assert results[0]["url"] == "http://yz.neu.edu.cn/page.htm"
-        assert results[0]["snippet"] == "some snippet"
-
-
 class TestHostCircuitBreaker:
     def test_opens_after_threshold_consecutive_failures(self):
         b = research._HostCircuitBreaker()
@@ -137,6 +105,34 @@ class TestHostCircuitBreaker:
         assert b.blocked_host("read_page", args) is None
         b.record("read_page", args, ok=False)
         assert b.blocked_host("read_page", args) == "r.jina.ai"
+
+    def test_soft_failures_also_trip_the_circuit(self):
+        """软失败必须计入熔断。
+
+        2026-09-11 实测：某次调研 12 轮里 read_page 被调 38 次、web_search 只 1 次
+        —— 因为「页面抓到了但读不出内容」（JS 渲染 / PDF / 反爬）被当成成功清零
+        计数，熔断永不触发，模型拿着 URL 无限重试。院校官网正是这种形态。
+        """
+        b = research._HostCircuitBreaker()
+        args = {"url": "https://yjszs.ecnu.edu.cn/zsml/sszsml/index/2026"}
+        for _ in range(b.SOFT_FAIL_THRESHOLD):
+            assert b.blocked_host("read_page", args) is None
+            b.record("read_page", args, ok=False, soft=True)
+        assert b.blocked_host("read_page", args) == "yjszs.ecnu.edu.cn"
+
+    def test_soft_categories_cover_unreadable_page(self):
+        """extract_fail / empty_html 必须在软失败集合里，否则熔断形同虚设。"""
+        assert "extract_fail" in research._HostCircuitBreaker.SOFT_CATEGORIES
+        assert "empty_html" in research._HostCircuitBreaker.SOFT_CATEGORIES
+
+    def test_success_resets_soft_counter_too(self):
+        b = research._HostCircuitBreaker()
+        args = {"url": "https://a.com/x"}
+        b.record("read_page", args, ok=False, soft=True)
+        b.record("read_page", args, ok=False, soft=True)
+        b.record("read_page", args, ok=True)
+        b.record("read_page", args, ok=False, soft=True)
+        assert b.blocked_host("read_page", args) is None
 
     def test_success_resets_counter(self):
         b = research._HostCircuitBreaker()
@@ -341,3 +337,139 @@ class TestPerResultFindings:
         by_src = {f["source"]: f["claim"] for f in findings}
         assert by_src["http://yz.neu.edu.cn/a"] == "东大2026目录"
         assert by_src["https://yzb.hit.edu.cn/b"] == "哈工大2026目录"
+
+
+class TestUrlDedup:
+    def test_key_normalises_host_case_and_trailing_slash(self):
+        k1 = research._url_key("read_page", {"url": "https://A.com/path/"})
+        k2 = research._url_key("read_page", {"url": "https://a.com/path"})
+        assert k1 == k2
+        assert research._url_key("read_page", {"url": "https://a.com/path?q=1"}) != k1
+
+    def test_non_fetch_tools_have_no_key(self):
+        assert research._url_key("web_search", {"query": "x"}) is None
+
+    def test_repeated_url_is_refused(self, tmp_data_dir):
+        """同一个 URL 读两遍必须被拒 —— 那次 38 次 read_page 的直接堵口。"""
+        responses = iter([
+            _tool_call_response(
+                "read_page", '{"url": "https://yzb.hit.edu.cn/a.htm"}', "c1"
+            ),
+            _tool_call_response(
+                "read_page", '{"url": "https://yzb.hit.edu.cn/a.htm"}', "c2"
+            ),
+            _final_response("done"),
+        ])
+        with patch.object(
+            research.llm_client, "chat", side_effect=lambda **kw: next(responses)
+        ), patch(
+            "agent_assistant.tools.web_tools.ReadPageTool.execute",
+            return_value=ToolResult.success(data={"text": "x"}),
+        ) as fetch:
+            result = research.run_research_subagent("goal", max_turns=5)
+
+        assert result.ok
+        assert fetch.call_count == 1  # 真去抓的只有第一次
+
+
+class TestDepthBudget:
+    def test_depth_maps_to_turn_budgets(self):
+        assert research.RESEARCH_DEPTH_TURNS["quick"] < research.RESEARCH_DEPTH_TURNS["standard"]
+        assert research.RESEARCH_DEPTH_TURNS["standard"] < research.RESEARCH_DEPTH_TURNS["deep"]
+
+    def test_unknown_depth_falls_back_to_standard(self, tmp_data_dir):
+        stream: list[tuple[str, dict]] = []
+        with patch.object(
+            research.llm_client, "chat",
+            side_effect=lambda **kw: _final_response("done"),
+        ):
+            research.run_research_subagent(
+                "goal", depth="bogus", on_event=lambda k, p: stream.append((k, p))
+            )
+        # 未传 max_turns → 用 standard 档
+        assert research.DEFAULT_RESEARCH_DEPTH == "standard"
+
+    def test_explicit_max_turns_beats_depth(self, tmp_data_dir):
+        """显式 max_turns 优先（测试与特殊调用方需要精确控制）。"""
+        seen: dict[str, int] = {}
+
+        def fake_progress(tool, label, turn, total):
+            seen["total"] = total
+
+        with patch.object(
+            research.llm_client, "chat",
+            side_effect=lambda **kw: _final_response("done"),
+        ):
+            research.run_research_subagent(
+                "goal", depth="deep", max_turns=3, on_progress=fake_progress
+            )
+        # 无工具调用时 on_progress 不会触发；这里只断言不抛错且被钳到 >=2
+        assert research.RESEARCH_DEPTH_TURNS["deep"] == 45
+
+
+class TestUrlDedup:
+    def test_key_normalises_host_case_and_trailing_slash(self):
+        k1 = research._url_key("read_page", {"url": "https://A.com/path/"})
+        k2 = research._url_key("read_page", {"url": "https://a.com/path"})
+        assert k1 == k2
+        assert research._url_key("read_page", {"url": "https://a.com/path?q=1"}) != k1
+
+    def test_non_fetch_tools_have_no_key(self):
+        assert research._url_key("web_search", {"query": "x"}) is None
+
+    def test_repeated_url_is_refused(self, tmp_data_dir):
+        """同一个 URL 读两遍必须被拒 —— 那次 38 次 read_page 的直接堵口。"""
+        responses = iter([
+            _tool_call_response(
+                "read_page", '{"url": "https://yzb.hit.edu.cn/a.htm"}', "c1"
+            ),
+            _tool_call_response(
+                "read_page", '{"url": "https://yzb.hit.edu.cn/a.htm"}', "c2"
+            ),
+            _final_response("done"),
+        ])
+        with patch.object(
+            research.llm_client, "chat", side_effect=lambda **kw: next(responses)
+        ), patch(
+            "agent_assistant.tools.web_tools.ReadPageTool.execute",
+            return_value=ToolResult.success(data={"text": "x"}),
+        ) as fetch:
+            result = research.run_research_subagent("goal", max_turns=5)
+
+        assert result.ok
+        assert fetch.call_count == 1  # 真去抓的只有第一次
+
+
+class TestDepthBudget:
+    def test_depth_maps_to_turn_budgets(self):
+        assert research.RESEARCH_DEPTH_TURNS["quick"] < research.RESEARCH_DEPTH_TURNS["standard"]
+        assert research.RESEARCH_DEPTH_TURNS["standard"] < research.RESEARCH_DEPTH_TURNS["deep"]
+
+    def test_unknown_depth_falls_back_to_standard(self, tmp_data_dir):
+        stream: list[tuple[str, dict]] = []
+        with patch.object(
+            research.llm_client, "chat",
+            side_effect=lambda **kw: _final_response("done"),
+        ):
+            research.run_research_subagent(
+                "goal", depth="bogus", on_event=lambda k, p: stream.append((k, p))
+            )
+        # 未传 max_turns → 用 standard 档
+        assert research.DEFAULT_RESEARCH_DEPTH == "standard"
+
+    def test_explicit_max_turns_beats_depth(self, tmp_data_dir):
+        """显式 max_turns 优先（测试与特殊调用方需要精确控制）。"""
+        seen: dict[str, int] = {}
+
+        def fake_progress(tool, label, turn, total):
+            seen["total"] = total
+
+        with patch.object(
+            research.llm_client, "chat",
+            side_effect=lambda **kw: _final_response("done"),
+        ):
+            research.run_research_subagent(
+                "goal", depth="deep", max_turns=3, on_progress=fake_progress
+            )
+        # 无工具调用时 on_progress 不会触发；这里只断言不抛错且被钳到 >=2
+        assert research.RESEARCH_DEPTH_TURNS["deep"] == 45

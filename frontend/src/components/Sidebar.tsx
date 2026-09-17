@@ -8,6 +8,7 @@ import {
   Settings,
   Pin,
   Trash2,
+  UserRoundPlus,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { actions, useStore } from "@/lib/store";
@@ -20,6 +21,7 @@ import {
   refreshConversations,
 } from "@/lib/conversations";
 import { ContextMenu } from "@/components/ui/ContextMenu";
+import { StudyProfileDialog } from "@/components/StudyProfileDialog";
 import type { Page } from "@/types";
 
 const NAV: { page: Page; label: string; icon: typeof MessageSquare }[] = [
@@ -33,6 +35,12 @@ export function Sidebar() {
   const page = useStore((s) => s.page);
   const collapsed = page !== "chat";
   const [query, setQuery] = useState("");
+  const [profileOpen, setProfileOpen] = useState(false);
+  // 画像已填 → 入口从引导文案变为摘要展示（专业 · 目标）。
+  const profileMajor = useStore((s) => (s.settings.profile_major || "").trim());
+  const profileGoal = useStore((s) => (s.settings.profile_goal || "").trim());
+  const hasProfile = !!(profileMajor || profileGoal);
+  const profileSummary = [profileMajor, profileGoal].filter(Boolean).join(" · ");
 
   return (
     <aside
@@ -50,6 +58,25 @@ export function Sidebar() {
           >
             <Plus className="h-4 w-4" />
             <span className="morph-label">新建会话</span>
+          </button>
+          <button
+            onClick={() => setProfileOpen(true)}
+            title={
+              hasProfile
+                ? "更新你的学习画像"
+                : "补充一下你自己，让我更好地认识你"
+            }
+            className={cn(
+              "interactive-morph flex h-8 items-center gap-2 rounded-md border px-3 text-xs hover:border-accent/60 hover:text-accent-strong",
+              hasProfile
+                ? "border-solid border-border text-primary"
+                : "border-dashed border-border text-secondary",
+            )}
+          >
+            <UserRoundPlus className={cn("h-3.5 w-3.5 shrink-0", hasProfile && "text-accent")} />
+            <span className="truncate">
+              {hasProfile ? profileSummary : "补充一下你自己，让我更好地认识你"}
+            </span>
           </button>
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-tertiary" />
@@ -91,6 +118,7 @@ export function Sidebar() {
           </button>
         ))}
       </nav>
+      <StudyProfileDialog open={profileOpen} onOpenChange={setProfileOpen} />
     </aside>
   );
 }

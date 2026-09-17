@@ -136,9 +136,11 @@ async def test_progress_summary_round_has_no_tools_and_resumes(
         for m in call_log[3]["messages"]
         if m.get("role") == "system"
     )
-    # The report is stored as a pre-made summary (checkpoint) for the next
-    # compaction to merge verbatim.
-    assert loop._memory_manager.pending_checkpoints == ["SUMMARY"]
+    # The forced progress round still happens (it breaks tool ping-pong), but
+    # the report is no longer registered as a compaction checkpoint —
+    # compaction now concatenates summary layers instead of merging a
+    # pre-made one verbatim.
+    assert not hasattr(loop._memory_manager, "pending_checkpoints")
     # Events must include the response.
     assert "response" in events
 

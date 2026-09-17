@@ -42,9 +42,8 @@ class MemoryService:
 
         # Memory manager (short-term window)
         self._memory_manager = MemoryManager(
-            token_budget=settings.memory_token_budget,
+            token_budget=settings.effective_memory_budget,
             summary_cap=settings.memory_summary_cap,
-            soft_rounds=settings.memory_soft_rounds,
         )
 
         # Profile store (SQLite)
@@ -95,22 +94,56 @@ class MemoryService:
             return ""
         return profile.build_prompt_section() or ""
 
-    def build_system_prompt_additions(self) -> str:
-        """Build text to append to system prompt (profile + global summary).
+    def build_study_profile_section(self) -> str:
+        """学习画像（设置页 → SystemPrompt「背景参考」）。
 
-        Prefer per-conversation ``AgentLoop`` memory for rolling summaries;
-        the global manager summary remains for single-loop / test callers.
+        Reads the ui settings table; empty/missing fields are skipped and an
+        all-empty profile yields "" (no section injected). Deliberately terse
+        (~100 tokens) and framed as BACKGROUND, not persona constraints.
         """
-        parts = []
-        profile = self.build_profile_additions()
-        if profile:
-            parts.append(profile)
+        try:
+            from agent_assistant.ui.store import ui_store
 
-        manager = self.get_memory_manager()
-        if manager:
-            prefix = manager.build_context_prefix()
-            if prefix:
-                parts.append(prefix)
+            def get(key: str) -> str:
+                return (ui_store.get_setting(key, "") or "").strip()
+
+            major = get("profile_major")
+            grade = get("profile_grade")
+            goal = get("profile_goal")
+            note = get("profile_note")
+        except Exception:
+            return ""
+
+        lines: list[str] = []
+        identity = " ".join(x for x in (grade, major) if x)
+        if identity:
+            lines.append(f"- 专业/年级：{identity}")
+        if goal:
+            lines.append(f"- 当前目标：{goal}")
+        if note:
+            lines.append(f"- 补充说明：{note}")
+        # 目标轨道从「用户已启用的轨道」派生，不另设画像字段——单一数据源，
+        # 避免「画像选了考研但没建轨道」这类不一致状态。
+        try:
+            from agent_assistant.goals.registry import get_spec
+            from agent_assistant.goals.store import goal_store
+
+            for t in goal_store.active_tracks():
+                spec = get_spec(t.kind)
+                if spec is not None:
+                    lines.append(f"- 目标轨道：{spec.label}（{spec.prompt_hint}）")
+                    break
+        except Exception:
+            pass
+        if not lines:
+            return ""
+        return (
+            "# 用户画像（背景参考，非人设约束）\n"
+            + "\n".join(lines)
+            + "\n交流时可默认用户具备其专业背景，举例与建议优先贴近其专业和目标场景"
+            "（备考资料、求职方向、术语深度按此校准）。这是背景信息而不是话题边界——"
+            "其他话题照常正常回应，也不要反复主动提及这份画像。\n"
+        )
 
         return "".join(parts)
 

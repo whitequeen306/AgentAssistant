@@ -5,6 +5,9 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+dist-exe/
+dist-onefile/
+build-onefile/
 .eggs/
 
 # Environment & secrets
@@ -22,6 +25,7 @@ venv/
 .pytest_cache/
 .ruff_cache/
 .cursorindexingignore
+.workbuddy/
 
 # Node / frontend
 node_modules/
@@ -31,6 +35,7 @@ frontend/e2e/REPORT.md
 frontend/tsconfig.tsbuildinfo
 frontend/tsconfig.node.tsbuildinfo
 frontend/vite.config.d.ts
+frontend/vite.config.js.timestamp-*
 
 # Built frontend bundle is COMMITTED on purpose (src/agent_assistant/ui/web/)
 # so a fresh clone runs without Node. Keep it tracked.
@@ -41,6 +46,15 @@ artifacts/
 scratch/
 shots/
 packaging/*.zip
+
+# Release binaries are distributed via the website, not git
+site/download/*.exe
+try-fresh.bat
+
+# Deployment infrastructure (server IP/topology — stays local, never push)
+DEVELOP.md
+scripts/
+docs/deploy/
 
 # OS
 Thumbs.db

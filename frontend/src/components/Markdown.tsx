@@ -16,6 +16,12 @@ const components: Components = {
   a: ({ node: _node, ...props }) => (
     <a {...props} target="_blank" rel="noopener noreferrer" />
   ),
+  // 宽表（择校对比表 10 列）放进横向滚动容器：列不再被压成一字宽的"竖排字"。
+  table: ({ node: _node, ...props }) => (
+    <div className="md-table-scroll">
+      <table {...props} />
+    </div>
+  ),
 };
 
 /** Sanitized GFM markdown renderer for assistant messages. */

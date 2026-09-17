@@ -3,7 +3,7 @@ import { FileUp, RefreshCw, Trash2, Database } from "lucide-react";
 import { IconButton, Button } from "@/components/ui";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Tooltip } from "@/components/ui/Tooltip";
-import { getApi } from "@/lib/bridge";
+import { getApi, prefetchStartChips } from "@/lib/bridge";
 import type { KnowledgeFile } from "@/types";
 
 /** 学习库 · 知识库面板：上传向量化 + 文件管理（原知识库页迁移）。 */
@@ -43,6 +43,8 @@ export function KnowledgePanel() {
             : "没有文件入库",
       );
       await refresh();
+      // 知识库变更 → 后台预生成开场 chips（防抖）。
+      if (n) prefetchStartChips();
     } finally {
       setBusy(false);
     }
@@ -57,6 +59,7 @@ export function KnowledgePanel() {
       await api.delete_knowledge_file(fileId);
       await refresh();
       setStatus("已删除");
+      prefetchStartChips();
     } finally {
       setBusy(false);
     }

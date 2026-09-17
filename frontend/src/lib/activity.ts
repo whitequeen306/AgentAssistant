@@ -1,6 +1,6 @@
 /** Categorize agent tool calls into Cursor-style activity summaries. */
 
-import type { ActivityStep } from "@/types";
+import type { ActivityStep, SubagentTaskView } from "@/types";
 import { toolLabel } from "@/lib/toolLabels";
 
 export type ActivityCategory =
@@ -20,8 +20,8 @@ export type ActivityCategory =
 
 export function formatThoughtLabel(startedAt: number, endedAt = Date.now()): string {
   const sec = Math.max(0, Math.round((endedAt - startedAt) / 1000));
-  if (sec < 1) return "Thought briefly";
-  return `Thought for ${sec}s`;
+  if (sec < 1) return "思考片刻";
+  return `思考 ${sec} 秒`;
 }
 
 function parseArgs(raw?: string): Record<string, unknown> {
@@ -96,53 +96,53 @@ export function stepLabel(name: string, args?: string): string {
   switch (name) {
     case "web_search": {
       const q = str(a.query || a.q || a.search);
-      return q ? `Searched "${q.length > 40 ? q.slice(0, 39) + "…" : q}"` : "Searched the web";
+      return q ? `搜索「${q.length > 40 ? q.slice(0, 39) + "…" : q}」` : "搜索网页";
     }
     case "read_page": {
       const url = str(a.url);
-      return url ? `Read ${shortUrl(url)}` : "Read a page";
+      return url ? `读取 ${shortUrl(url)}` : "读取页面";
     }
     case "extract_content": {
       const url = str(a.url);
-      return url ? `Extracted from ${shortUrl(url)}` : "Extracted page content";
+      return url ? `提取 ${shortUrl(url)}` : "提取页面内容";
     }
     case "read_file":
     case "read_attached_source":
     case "read_local_source": {
       const path = str(a.path || a.filename);
-      return path ? `Read ${shortPath(path)}` : "Read a file";
+      return path ? `读取 ${shortPath(path)}` : "读取文件";
     }
     case "edit_file": {
       const path = str(a.path);
-      return path ? `Edited ${shortPath(path)}` : "Edited a file";
+      return path ? `修改 ${shortPath(path)}` : "修改文件";
     }
     case "write_file": {
       const path = str(a.path);
-      return path ? `Wrote ${shortPath(path)}` : "Wrote a file";
+      return path ? `写入 ${shortPath(path)}` : "写入文件";
     }
     case "move_file": {
       const src = str(a.src || a.source || a.path);
-      return src ? `Moved ${shortPath(src)}` : "Moved a file";
+      return src ? `移动 ${shortPath(src)}` : "移动文件";
     }
     case "list_files": {
       const path = str(a.path || a.directory || a.dir);
-      return path ? `Listed ${shortPath(path)}` : "Listed files";
+      return path ? `浏览 ${shortPath(path)}` : "浏览目录";
     }
     case "run_command": {
       const cmd = str(a.command || a.cmd);
       return cmd
-        ? `Ran \`${cmd.length > 36 ? cmd.slice(0, 35) + "…" : cmd}\``
-        : "Ran a command";
+        ? `执行 \`${cmd.length > 36 ? cmd.slice(0, 35) + "…" : cmd}\``
+        : "执行命令";
     }
     case "dispatch_research": {
       const goal = str(a.goal);
       return goal
-        ? `Dispatched research: ${goal.length > 36 ? goal.slice(0, 35) + "…" : goal}`
-        : "Dispatched research";
+        ? `派出调研：${goal.length > 36 ? goal.slice(0, 35) + "…" : goal}`
+        : "派出调研";
     }
     case "search_knowledge": {
       const q = str(a.query);
-      return q ? `Queried knowledge: "${q.length > 32 ? q.slice(0, 31) + "…" : q}"` : "Queried knowledge";
+      return q ? `检索知识库「${q.length > 32 ? q.slice(0, 31) + "…" : q}」` : "检索知识库";
     }
     case "recall_memory":
       return "回忆记忆";
@@ -169,18 +169,18 @@ export function stepLabel(name: string, args?: string): string {
   }
 }
 
-/** Collapsed summary in English, Cursor-style. */
+/** 折叠态的摘要行（中文，形如「已读取 2 个页面，搜索 3 次」）。 */
 export function summarizeActivity(steps: ActivityStep[]): string {
-  if (!steps.length) return "Working…";
+  if (!steps.length) return "处理中…";
 
   const nonThought = steps.filter((s) => s.category !== "thought");
   const pendingThought = steps.find(
     (s) => s.category === "thought" && s.status === "pending",
   );
   if (!nonThought.length) {
-    if (pendingThought) return "Thinking…";
+    if (pendingThought) return "思考中…";
     const last = [...steps].reverse().find((s) => s.category === "thought");
-    return last?.label || "Thought";
+    return last?.label || "思考";
   }
 
   const counts: Partial<Record<ActivityCategory, number>> = {};
@@ -191,54 +191,60 @@ export function summarizeActivity(steps: ActivityStep[]): string {
 
   const parts: string[] = [];
   const n = (c: ActivityCategory) => counts[c] || 0;
+  const push = (c: ActivityCategory, unit: string, verb: string) => {
+    const k = n(c);
+    if (k) parts.push(`${verb} ${k} ${unit}`);
+  };
 
-  if (n("edit_file")) {
-    parts.push(`Edited ${n("edit_file")} file${n("edit_file") === 1 ? "" : "s"}`);
-  }
-  if (n("write_file")) {
-    parts.push(`Wrote ${n("write_file")} file${n("write_file") === 1 ? "" : "s"}`);
-  }
-  if (n("read_file")) {
-    parts.push(`Read ${n("read_file")} file${n("read_file") === 1 ? "" : "s"}`);
-  }
-  if (n("list_files")) {
-    parts.push(`Explored ${n("list_files")} path${n("list_files") === 1 ? "" : "s"}`);
-  }
-  if (n("read_page")) {
-    parts.push(`Read ${n("read_page")} page${n("read_page") === 1 ? "" : "s"}`);
-  }
-  if (n("search")) {
-    parts.push(`Searched ${n("search")} time${n("search") === 1 ? "" : "s"}`);
-  }
-  if (n("command")) {
-    parts.push(`Ran ${n("command")} command${n("command") === 1 ? "" : "s"}`);
-  }
-  if (n("research")) {
-    parts.push(
-      n("research") === 1 ? "Dispatched research" : `Dispatched research ${n("research")} times`,
-    );
-  }
-  if (n("knowledge")) {
-    parts.push(`Queried knowledge ${n("knowledge")} time${n("knowledge") === 1 ? "" : "s"}`);
-  }
-  if (n("memory")) {
-    parts.push(`Memory ${n("memory")} call${n("memory") === 1 ? "" : "s"}`);
-  }
-  if (n("note")) {
-    parts.push(`Saved ${n("note")} note${n("note") === 1 ? "" : "s"}`);
-  }
-  if (n("other")) {
-    parts.push(`Called ${n("other")} tool${n("other") === 1 ? "" : "s"}`);
-  }
+  push("search", "次", "搜索");
+  push("read_page", "个页面", "读取");
+  push("read_file", "个文件", "读取");
+  push("list_files", "个目录", "浏览");
+  push("edit_file", "个文件", "修改");
+  push("write_file", "个文件", "写入");
+  push("command", "条命令", "执行");
+  push("research", "次", "派出调研");
+  push("knowledge", "次", "检索知识库");
+  push("memory", "次", "记忆调用");
+  push("note", "条", "保存笔记");
+  push("other", "个", "调用工具");
 
-  if (!parts.length) {
-    return `Called ${nonThought.length} tool${nonThought.length === 1 ? "" : "s"}`;
-  }
+  if (!parts.length) return `调用了 ${nonThought.length} 个工具`;
+  return `已${parts.join("，")}`;
+}
 
-  // Prefix total tool count when there are multiple categories
-  if (parts.length > 1 || nonThought.length > 1) {
-    const head = `${nonThought.length} tool${nonThought.length === 1 ? "" : "s"}`;
-    return `${head}: ${parts.join(", ")}`;
+/** dispatch_research 步骤里的目标文本（解析失败返回空串）。 */
+export function researchGoalOf(step: ActivityStep): string {
+  if (!step.args) return "";
+  try {
+    const g = JSON.parse(step.args)?.goal;
+    return typeof g === "string" ? g : "";
+  } catch {
+    return "";
   }
-  return parts[0];
+}
+
+/**
+ * 该调研是否已被子任务卡片接管。
+ *
+ * 一次调研会同时产生两条 UI 线索：主 Agent 的 dispatch_research 工具步骤，
+ * 和 SubagentManager 派出的子任务。两者渲染同一件事，必须只显示一张卡片。
+ * 走 SubagentManager 时子任务存在 → 内联卡片让位；挂了本地附件走直连路径时
+ * 没有子任务 → 内联卡片是唯一展示位置，必须保留。
+ */
+export function isResearchCovered(
+  step: ActivityStep,
+  subagents: Record<string, SubagentTaskView>,
+): boolean {
+  if (step.category !== "research") return false;
+  const raw = researchGoalOf(step);
+  if (!raw) return false;
+  const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+  const target = norm(raw);
+  const probe = target.slice(0, 40);
+  return Object.values(subagents).some((t) => {
+    if (t.role !== "researcher" || !t.goal) return false;
+    const g = norm(t.goal);
+    return g === target || g.startsWith(probe) || target.startsWith(g.slice(0, 40));
+  });
 }

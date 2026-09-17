@@ -16,7 +16,18 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from agent_assistant.memory.session_trace import (
+    EVENT_COMPACTION,
+    EVENT_PRUNING,
+    EVENT_SUMMARY_ARCHIVED,
+)
+from agent_assistant.memory.summary_archive import (
+    archive_layers,
+    pointer_line,
+    split_layers,
+)
 from agent_assistant.memory.token_counter import count_messages_tokens, count_tokens
+from agent_assistant.memory.tool_summary import argument_hint, summarize_tool_result
 
 logger = logging.getLogger(__name__)
 
@@ -58,13 +69,17 @@ def _default_summarizer(text: str) -> str:
                 "role": "system",
                 "content": (
                     "You are a conversation summarizer for an agentic desktop "
-                    "assistant. Condense the excerpt into a brief summary that "
-                    "preserves, in priority order: (1) the user's CURRENT request "
-                    "or goal, (2) which steps are already done (tool names + key "
-                    "arguments + outcomes), (3) what is still pending or blocked "
-                    "and why, (4) other key facts and decisions. The assistant "
-                    "will resume the task from your summary alone — never omit "
-                    "the goal or the pending state. Output only the summary."
+                    "assistant. Condense the excerpt into a short summary with "
+                    "these section headings: '## 目标' — the user's CURRENT "
+                    "request or goal (always present); '## 已完成' — steps "
+                    "already done (tool names + key arguments + outcomes); "
+                    "'## 待办/阻塞' — what is still pending or blocked, and "
+                    "why; '## 关键事实' — other key facts, decisions, and file "
+                    "paths. Skip a section entirely when it has no content — "
+                    "never write \"无\" or \"none\". Keep file paths EXACTLY as "
+                    "they appeared. The assistant will resume the task from "
+                    "your summary alone — never omit the goal or the pending "
+                    "state. Output only the summary."
                 ),
             },
             {"role": "user", "content": text},
@@ -80,7 +95,6 @@ class MemoryManager:
     Parameters:
         token_budget: max tokens for the message window (excluding system prompt)
         summary_cap: max tokens for the rolling summary
-        soft_rounds: soft limit on user/assistant pairs before compaction
         summarizer: callable that summarizes text (injectable for tests)
     """
 
@@ -88,22 +102,39 @@ class MemoryManager:
         self,
         token_budget: int = 12000,
         summary_cap: int = 1200,
-        soft_rounds: int = 4,
         summarizer: Summarizer | None = None,
         snapshot_resolver: Callable[[str], SnapshotSpec | None] | None = None,
     ) -> None:
         self._token_budget = token_budget
         self._summary_cap = summary_cap
-        self._soft_rounds = soft_rounds
         self._summarizer = summarizer or _default_summarizer
         self._snapshot_resolver = snapshot_resolver or _registry_snapshot_resolver
 
         self._rolling_summary: str = ""
         self._dropped_count: int = 0
-        # Progress-report texts (from the loop's forced summary rounds) whose
-        # assistant messages have not been dropped/absorbed yet. At compaction
-        # time a checkpoint replaces the summarizer for everything it covers.
-        self._pending_checkpoints: list[str] = []
+        # Optional session trace (events.jsonl). Left unset by default so a
+        # bare MemoryManager — e.g. in tests — never writes to disk; the
+        # agent loop attaches the real one in __init__.
+        self._trace: Any = None
+        self._session_id: str = ""
+
+    def attach_trace(self, trace: Any, session_id: str) -> None:
+        """Record compaction/pruning events to the session's event stream.
+
+        Optional on purpose: without it the manager behaves exactly as
+        before (no observer, no I/O).
+        """
+        self._trace = trace
+        self._session_id = session_id
+
+    def _emit_trace(self, event: str, **fields: Any) -> None:
+        """Best-effort event write — tracing must never break a turn."""
+        if self._trace is None:
+            return
+        try:
+            self._trace.event(self._session_id, event, **fields)
+        except Exception:  # pragma: no cover — the writer swallows its own
+            logger.debug("session trace event failed (%s)", event, exc_info=True)
 
     @property
     def rolling_summary(self) -> str:
@@ -115,7 +146,12 @@ class MemoryManager:
         """Number of messages dropped so far."""
         return self._dropped_count
 
-    def maybe_compact(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def maybe_compact(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        allow_dropping: bool = True,
+    ) -> list[dict[str, Any]]:
         """Check token budget and compact if needed.
 
         Returns the (possibly truncated) message list.
@@ -124,8 +160,17 @@ class MemoryManager:
         Rules:
         - messages[0] (system prompt) is NEVER dropped
         - Keeps the most recent messages that fit in budget
+        - The newest user message (the in-flight task) is always kept
         - Dropped messages are summarized into rolling_summary first
         - Message pairs (user→assistant) are kept complete
+
+        ``allow_dropping=False`` runs the lossless passes only (snapshot
+        stubbing + argument/result shrinking) and removes nothing. The loop
+        passes that while a user turn is still in flight: shrinking usually
+        brings the window back under budget anyway, whereas dropping messages
+        mid-turn makes the model lose the beginning of the work it is doing —
+        it keeps seeing the last tool rounds while the steps that produced
+        them are gone. Dropping is deferred to the next user turn.
         """
         if not messages:
             return messages
@@ -135,19 +180,47 @@ class MemoryManager:
         # first tree dead weight — replacing it with a stub often brings the
         # conversation back under budget WITHOUT dropping anything.
         messages = self._stub_superseded_snapshots(messages)
-        # Pass 0b: shrink arguments in old, complete tool-call groups (also
-        # every round, idempotent — full originals live in the tool archive).
         # Own shallow copy first: aging replaces list slots in place, and
         # when stubbing found nothing the list above still aliases the
         # caller's list (maybe_compact promises not to mutate its input).
         messages = list(messages)
-        self._age_off_old_arguments(messages)
+        # Pass 0b: Pruning — degrade whole tool-call groups that fell outside
+        # the token protect line. Each degraded group collapses to TWO
+        # one-liners (a result summary + an argument placeholder), never a
+        # half-read fragment. Runs every round and is idempotent; the
+        # untouched originals live in tool_details.jsonl.
+        aged_results, aged_args = self._age_off_old_groups(messages)
+        if aged_args or aged_results:
+            # Audited so "why is this a one-liner now?" is answerable after
+            # the fact — the original text lives in tool_details.jsonl.
+            self._emit_trace(
+                EVENT_PRUNING,
+                summary=(
+                    f"pruning：{aged_results} 条工具结果改为一句话摘要，"
+                    f"{aged_args} 组旧参数改为占位（原文见 tool_details）"
+                ),
+                results_summarized=aged_results,
+                args_shrunk=aged_args,
+            )
 
         system_msg = messages[0]
         conversation = messages[1:]  # everything after system prompt
 
         # Count tokens for conversation part only
         conv_tokens = count_messages_tokens(conversation)
+
+        if (
+            not allow_dropping
+            and conv_tokens <= self._token_budget * self._MIDTURN_HARD_RATIO
+        ):
+            # Mid-turn: the lossless passes above already ran. Stop here — the
+            # alternative is the model losing its own earlier steps.
+            #
+            # The ratio is the escape hatch: if one turn has grown far past
+            # budget, refusing to drop forever means the next API call
+            # overflows the model, which is strictly worse than a summarised
+            # middle. Beyond it we drop like any other round.
+            return messages
 
         # Under budget → no compaction needed
         if conv_tokens <= self._token_budget:
@@ -212,10 +285,10 @@ class MemoryManager:
             to_drop = conversation[:keep_from]
             to_keep = conversation[keep_from:]
 
-        # Drop trailing incomplete tool-call groups from the keep window.
-        # soft_rounds counting treats every message equally, so a bare
-        # assistant(tool_calls) (result not yet appended — e.g. concurrent
-        # turn) can land in to_keep and 400 the next API call.
+        # Drop trailing incomplete tool-call groups from the keep window:
+        # the cut is by token, so a bare assistant(tool_calls) whose result has
+        # not been appended yet (e.g. a concurrent turn) can land in to_keep
+        # and 400 the next API call.
         to_keep, stripped = self._strip_incomplete_tool_groups(to_keep)
         if stripped:
             to_drop = to_drop + stripped
@@ -223,12 +296,10 @@ class MemoryManager:
         if not to_drop:
             return list(messages)
 
-        # Absorb dropped messages into the rolling summary. Progress-report
-        # checkpoints whose messages fall inside the dropped range are merged
-        # VERBATIM (they are pre-made summaries — re-summarizing them only
-        # loses detail); only the gaps between checkpoints go through the
-        # summarizer. A summarizer failure (network blip) must not kill the
-        # in-flight turn — skip compaction this round and retry on the next.
+        # Absorb dropped messages into the rolling summary as a NEW layer
+        # (concatenated after the existing ones — older layers are never
+        # re-summarized). A summarizer failure (network blip) must not kill
+        # the in-flight turn — skip compaction this round and retry next.
         try:
             self._absorb_dropped(to_drop)
         except Exception:
@@ -244,6 +315,19 @@ class MemoryManager:
             len(to_drop),
             len(to_keep),
             count_tokens(self._rolling_summary),
+        )
+        # Record the trigger, range size and pre-compaction size: without this
+        # an auditor cannot explain why a stretch of context disappeared.
+        self._emit_trace(
+            EVENT_COMPACTION,
+            summary=(
+                f"compaction：丢弃 {len(to_drop)} 条消息，保留 {len(to_keep)} 条，"
+                f"滚动摘要 {count_tokens(self._rolling_summary)} tokens"
+            ),
+            dropped=len(to_drop),
+            kept=len(to_keep),
+            tokens={"window_before": conv_tokens, "budget": self._token_budget},
+            summary_tokens=count_tokens(self._rolling_summary),
         )
 
         return [system_msg] + to_keep
@@ -264,8 +348,17 @@ class MemoryManager:
     def _find_split_point(self, conversation: list[dict[str, Any]]) -> int:
         """Find index to split: keep messages[index:] within budget.
 
-        Ensures we don't split a user/assistant pair.
-        Always keeps at least the last soft_rounds pairs.
+        Keep as MUCH of the tail as fits — walk backwards from the newest
+        message accumulating tokens, and stop at the first message that would
+        push the window over budget. That single rule IS the policy: what fits
+        is kept verbatim, what doesn't is summarized.
+
+        There used to be a second rule here — a floor guaranteeing the newest
+        N user turns survived. It was removed (2026-09-14) after an A/B run
+        over 10 scenarios showed it never changed the outcome: anything that
+        fits is already inside the tail window, and when it did not fit the
+        floor bowed out to the budget anyway. Two moving parts that always
+        moved together are one part.
         """
         n = len(conversation)
 
@@ -287,15 +380,7 @@ class MemoryManager:
         # Adjust split so the keep window doesn't start on an orphan tool
         # result (its parent assistant(tool_calls) would be in the dropped
         # side → the next API call 400s on an unpaired tool message).
-        split = self._align_to_safe_boundary(conversation, split)
-
-        # Ensure we keep at least soft_rounds pairs
-        min_keep = self._soft_rounds * 2  # user + assistant per round
-        if n - split < min_keep and n > min_keep:
-            split = max(0, n - min_keep)
-            split = self._align_to_safe_boundary(conversation, split)
-
-        return split
+        return self._align_to_safe_boundary(conversation, split)
 
     def _align_to_safe_boundary(
         self, conversation: list[dict[str, Any]], split: int
@@ -363,14 +448,45 @@ class MemoryManager:
     _STUB_PREFIX = '{"ok": true, "data": "[历史快照'
 
     # ── Argument age-off (full args live in the tool archive) ─────────────
-    # Newest N complete tool-call groups keep full arguments; older groups
-    # get long string values shrunk (valid JSON preserved — pairing works on
-    # ids, snapshot keying on short filter values). Old write/type payloads
-    # (full file bodies, long typed text) are pure dead weight once done.
-    _KEEP_RECENT_ARG_GROUPS = 4
-    _ARGS_GROUP_MIN_CHARS = 120  # groups whose total args are below this: untouched
-    _ARGS_VALUE_MAX = 200  # per-string-value cap in aged-off arguments
-    _ARGS_CUT_MARK = "…[已截断]"
+    # A degraded group loses its arguments WHOLESALE to a one-line
+    # placeholder — never value-by-value truncation. Context holds either the
+    # original or a single line; a half-readable fragment is the one shape
+    # the design forbids (it is neither usable nor cheap). Old write/type
+    # payloads — full file bodies, long typed text — are pure dead weight
+    # once the call has already returned.
+    _ARG_PLACEHOLDER_MIN_CHARS = 120  # shorter args are already one-liners
+    _ARG_PLACEHOLDER_PREFIX = '{"_aged"'  # idempotence marker
+
+    # ── Tool-result age-off (full results live in the tool archive) ───────
+    # The newest tool results stay verbatim; older ones have the bulky body
+    # replaced by a one-line categorical summary (memory/tool_summary.py,
+    # zero model calls). The model still knows WHAT it did and whether it
+    # worked; the full text is retrievable via recall_tool_result(call_id=...).
+    #
+    # The cut is by TOKEN, not by message count: "the last 8 results" says
+    # nothing about real pressure — 8 short commands are 500 tokens, 8 fetched
+    # pages are 200K. Counting tokens makes small results immune and makes
+    # oversized ones get summarised immediately.
+    #
+    #   protect   = token_budget × 0.35   results inside it stay verbatim
+    #   actionable = protect × 0.4        (≈ 14% of budget) below this, don't
+    #                                     bother rewriting anything
+    #   trigger   = protect + actionable (≈ 49% of budget)
+    _PRUNE_PROTECT_RATIO = 0.35
+    _PRUNE_MIN_ACTION_RATIO = 0.4
+    _RESULT_SUMMARY_PREFIX = '{"ok": true, "data": "[历史工具结果'
+    # Floor, mirroring _ARG_PLACEHOLDER_MIN_CHARS: a result shorter than this
+    # is ALREADY a one-liner, and the summary adds a "[历史工具结果已压缩]"
+    # marker plus a recall pointer, so collapsing it would make the payload
+    # bigger. Measured: an 82-char result became 114 chars.
+    _RESULT_SUMMARY_MIN_CHARS = 120
+
+    # ── Mid-turn protection ───────────────────────────────────────────────
+    # While a user turn is in flight (allow_dropping=False) the manager only
+    # shrinks payloads. Past this multiple of the budget it drops anyway —
+    # refusing forever would overflow the model, which is worse than a
+    # summarised middle.
+    _MIDTURN_HARD_RATIO = 1.5
 
     @staticmethod
     def _snapshot_is_empty(content: str) -> bool:
@@ -498,45 +614,126 @@ class MemoryManager:
             )
         return out
 
+    # ── Pruning: degrade whole groups outside the protect line ────────────
+
+    def _age_off_old_groups(
+        self, messages: list[dict[str, Any]]
+    ) -> tuple[int, int]:
+        """Pruning entry point — degrade every group past the protect line.
+
+        ONE rule, applied to a group at a time: a group is either INTACT
+        (arguments + results verbatim) or DEGRADED into two one-liners — a
+        summary of the result and a placeholder for the arguments. There is no
+        third shape; a group never ends up half-read.
+
+        Which groups count as old is decided once, by token
+        (:meth:`_aged_group_starts`), so both halves act on the same set and
+        can never disagree about where the cut is.
+
+        ORDER MATTERS — results first. The summary generator reads the
+        arguments to write "读了 <path>" / "来自 <URL>"; hand it placeholders
+        and every summary collapses to "read_file(...) → ok".
+
+        Returns ``(results_summarized, groups_arguments_placeholdered)``.
+        """
+        groups = self._complete_group_indices(messages)
+        old_starts = self._aged_group_starts(messages, groups)
+        if not old_starts:
+            return 0, 0
+        results = self._age_off_old_results(messages, old_starts)
+        arguments = self._age_off_old_arguments(messages, old_starts)
+        return results, arguments
+
     # ── Argument age-off ──────────────────────────────────────────────────
 
     @classmethod
-    def _shrink_args_json(cls, raw: str) -> str:
-        """Cut long string values inside a JSON arguments string.
+    def _arg_placeholder(cls, call_id: str, arguments: Any = None) -> str:
+        """One-line replacement for a degraded group's ``function.arguments``.
 
-        Structure stays valid JSON (snapshot keying parses it every round;
-        short filter keys like title_pattern are preserved verbatim). Unparseable
-        args are returned unchanged — never risk breaking the API payload.
+        Must stay valid JSON — that is the API contract. Three fields, each
+        earning its place:
+
+        ``_aged``     marks it as compressed, so the model never mistakes the
+                      placeholder for what it actually passed earlier;
+        ``_call_id``  the key to the untouched record in tool_details.jsonl
+                      (``recall_tool_result`` returns full arguments + result);
+        ``_hint``     path / url / command / query, so the model still knows
+                      what this call was ABOUT without paying for a recall —
+                      result summaries omit it for e.g. web_search.
         """
-        try:
-            parsed = json.loads(raw)
-        except Exception:
-            return raw
-        mark = cls._ARGS_CUT_MARK
+        payload: dict[str, Any] = {"_aged": True, "_call_id": call_id}
+        hint = argument_hint(arguments)
+        if hint:
+            payload["_hint"] = hint
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
-        def shrink(node: Any) -> Any:
-            if isinstance(node, str):
-                return node if len(node) <= cls._ARGS_VALUE_MAX else (
-                    node[: cls._ARGS_VALUE_MAX] + mark
+    def _age_off_old_arguments(
+        self, messages: list[dict[str, Any]], old_starts: set[int]
+    ) -> int:
+        """Swap a degraded group's arguments for a one-line placeholder.
+
+        WHOLESALE, not value by value: context holds either the original or a
+        single line. Cutting every long value down to 200 chars instead leaves
+        a half-read fragment — too long to be cheap, too short to be usable —
+        the one shape the design forbids. It also fights the result summary
+        sitting right below it, which already said "wrote notes/note_0.md".
+
+        Skipped: short arguments (already one-liners — the placeholder would
+        be bigger than what it replaces), snapshot groups (Pass 0 owns them),
+        and already-aged ones (keeps this idempotent).
+        """
+        changed = 0
+        for idx in sorted(old_starts):
+            m = messages[idx]
+            tcs = m.get("tool_calls") or []
+            if not tcs:
+                continue
+            new_tcs: list[dict[str, Any]] = []
+            modified = False
+            for tc in tcs:
+                fn = tc.get("function") or {}
+                raw = fn.get("arguments")
+                if self._snapshot_resolver(str(fn.get("name") or "")) is not None:
+                    new_tcs.append(tc)
+                    continue
+                if not isinstance(raw, str) or (
+                    len(raw) < self._ARG_PLACEHOLDER_MIN_CHARS
+                    or raw.lstrip().startswith(self._ARG_PLACEHOLDER_PREFIX)
+                ):
+                    new_tcs.append(tc)
+                    continue
+                new_tcs.append(
+                    {
+                        **tc,
+                        "function": {
+                            **fn,
+                            "arguments": self._arg_placeholder(
+                                str(tc.get("id") or ""), raw
+                            ),
+                        },
+                    }
                 )
-            if isinstance(node, dict):
-                return {k: shrink(v) for k, v in node.items()}
-            if isinstance(node, list):
-                return [shrink(v) for v in node]
-            return node
+                modified = True
+            if modified:
+                messages[idx] = {**m, "tool_calls": new_tcs}
+                changed += 1
+        if changed:
+            logger.info(
+                "Aged off arguments in %d old tool-call group(s)", changed
+            )
+        return changed
 
-        return json.dumps(shrink(parsed), ensure_ascii=False)
+    # ── Tool-result age-off (the biggest context consumer) ────────────────
 
-    def _age_off_old_arguments(self, messages: list[dict[str, Any]]) -> int:
-        """Shrink bloated arguments in OLD, COMPLETE tool-call groups.
+    @staticmethod
+    def _complete_group_indices(messages: list[dict[str, Any]]) -> list[int]:
+        """Indices of assistant(tool_calls) whose tool replies are all present.
 
-        A group is assistant(tool_calls) + its immediately following tool
-        replies, all ids paired. The newest ``_KEEP_RECENT_ARG_GROUPS``
-        groups are untouched; older ones get long string values in
-        ``function.arguments`` cut to ``_ARGS_VALUE_MAX`` (in place). The
-        full original arguments are in the tool archive.
+        A complete group = assistant(tool_calls) + its immediately following
+        tool messages, every id paired. Incomplete groups (reply not appended
+        yet) are skipped — touching them would break the API pairing.
         """
-        groups: list[int] = []  # indices of assistant(tool_calls) messages
+        groups: list[int] = []
         n = len(messages)
         i = 0
         while i < n:
@@ -553,120 +750,243 @@ class MemoryManager:
                 i = j
             else:
                 i += 1
+        return groups
 
-        if len(groups) <= self._KEEP_RECENT_ARG_GROUPS:
-            return 0
+    @staticmethod
+    def _owning_group_index(
+        messages: list[dict[str, Any]], tool_idx: int
+    ) -> int | None:
+        """Index of the assistant(tool_calls) owning the tool msg at ``tool_idx``.
+
+        Tool messages always immediately follow their requesting assistant
+        message, so the nearest assistant above IS the owner.
+        """
+        tc_id = messages[tool_idx].get("tool_call_id")
+        for j in range(tool_idx - 1, -1, -1):
+            m = messages[j]
+            if m.get("role") != "assistant":
+                continue
+            tcs = m.get("tool_calls") or []
+            if not tcs:
+                return None
+            return j if tc_id in {tc.get("id") for tc in tcs} else None
+        return None
+
+    def _age_off_old_results(
+        self, messages: list[dict[str, Any]], old_starts: set[int]
+    ) -> int:
+        """Replace OLD tool-call results with a one-line categorical summary.
+
+        Groups inside the token protection line keep their result verbatim
+        (the model is likely still working with them). Older groups
+        have the bulky result body swapped for a zero-cost summary produced
+        by :mod:`agent_assistant.memory.tool_summary` — so the model still
+        knows *what it did* and *whether it worked*, while the full text stays
+        retrievable via ``recall_tool_result(call_id=...)``.
+
+        Boundaries (never violated):
+        - message order, ids and assistant(tool_calls) pairing are untouched;
+          only the ``content`` of an old ``role="tool"`` message changes;
+        - already-stubbed snapshots (Pass 0) and already-summarized results
+          are skipped, making this idempotent;
+        - failure summaries carry a *category*, never a raw traceback.
+        """
+        meta: dict[str, tuple[str, Any]] = {}
+        for m in messages:
+            for tc in m.get("tool_calls") or []:
+                tc_id = tc.get("id")
+                if not tc_id or tc_id in meta:
+                    continue
+                fn = tc.get("function") or {}
+                meta[tc_id] = (str(fn.get("name") or ""), fn.get("arguments"))
 
         changed = 0
-        for idx in groups[: -self._KEEP_RECENT_ARG_GROUPS]:
-            m = messages[idx]
-            tcs = m.get("tool_calls") or []
-            total_chars = sum(
-                len(str((tc.get("function") or {}).get("arguments", "")))
-                for tc in tcs
-            )
-            if total_chars < self._ARGS_GROUP_MIN_CHARS:
+        for i, m in enumerate(messages):
+            if m.get("role") != "tool":
                 continue
-            new_tcs = []
-            modified = False
-            for tc in tcs:
-                fn = tc.get("function") or {}
-                raw = fn.get("arguments")
-                if not isinstance(raw, str) or len(raw) < self._ARGS_GROUP_MIN_CHARS:
-                    new_tcs.append(tc)
-                    continue
-                shrunk = self._shrink_args_json(raw)
-                if shrunk != raw:
-                    modified = True
-                    new_tcs.append({**tc, "function": {**fn, "arguments": shrunk}})
-                else:
-                    new_tcs.append(tc)
-            if modified:
-                messages[idx] = {**m, "tool_calls": new_tcs}
-                changed += 1
+            owner = self._owning_group_index(messages, i)
+            if owner is None or owner not in old_starts:
+                continue
+            content = str(m.get("content") or "")
+            if content.startswith(self._RESULT_SUMMARY_PREFIX) or content.startswith(
+                self._STUB_PREFIX
+            ):
+                continue
+            if len(content) < self._RESULT_SUMMARY_MIN_CHARS:
+                continue  # already a one-liner; a summary would be longer
+            tc_id = str(m.get("tool_call_id") or "")
+            tool, args = meta.get(tc_id, ("", None))
+            if not tool or self._snapshot_resolver(tool) is not None:
+                # Snapshots are Pass 0's business: they follow their own
+                # supersede rule (a newer shot of the same window makes the
+                # older one dead weight). Collapsing one into a one-line
+                # summary here would hide the control tree the model is
+                # actively reading — the whole point of ui_inspect.
+                continue
+            summary = summarize_tool_result(tool, args, content)
+            payload = (
+                f"[历史工具结果已压缩] {summary}；"
+                f'需要完整结果可 recall_tool_result(call_id="{tc_id}")'
+            )
+            messages[i] = {
+                **m,
+                "content": json.dumps(
+                    {"ok": True, "data": payload}, ensure_ascii=False
+                ),
+            }
+            changed += 1
         if changed:
-            logger.info("Aged off arguments in %d old tool-call group(s)", changed)
+            logger.info(
+                "Aged off %d old tool result(s) into one-line summaries", changed
+            )
         return changed
 
-    # ── Progress checkpoints ──────────────────────────────────────────────
+    def _group_cost_tokens(self, messages: list[dict[str, Any]], start: int) -> int:
+        """Token cost of a WHOLE group — arguments plus results.
 
-    def record_checkpoint(self, text: str) -> None:
-        """Register a progress-report text as a pre-made summary.
-
-        Called by the agent loop right after a forced progress-summary round.
-        The checkpoint stays pending until a compaction drops its message;
-        it is then merged into the rolling summary VERBATIM (no extra
-        summarizer call, no extra detail loss) and covers everything dropped
-        before it.
+        Both halves are what Pruning shrinks, so both count toward the
+        protect line. Measuring results alone leaves a group whose ARGUMENT
+        is the payload (``write_file(content=<a whole document>)``) parked
+        inside the protected window forever while it eats most of the budget —
+        measured on a real run: 9,510 tokens of arguments against 1,686 of
+        results, and pruning never fired at all.
         """
-        t = (text or "").strip()
-        if t:
-            self._pending_checkpoints.append(t)
+        total = count_messages_tokens([messages[start]])  # assistant + arguments
+        i = start + 1
+        while i < len(messages) and messages[i].get("role") == "tool":
+            total += count_messages_tokens([messages[i]])
+            i += 1
+        return total
 
-    @property
-    def pending_checkpoints(self) -> list[str]:
-        """Checkpoints recorded but not yet absorbed by a compaction."""
-        return list(self._pending_checkpoints)
+    def _aged_group_starts(
+        self, messages: list[dict[str, Any]], groups: list[int]
+    ) -> set[int]:
+        """Which groups fall outside the token protection line.
+
+        Walk from the newest group backwards accumulating each group's token
+        cost (arguments + results): what fits inside ``protect`` stays
+        verbatim, everything beyond it is a candidate.
+
+        The action threshold is what keeps this from thrashing — if the
+        candidates do not add up to ``protect × 0.4``, we leave them alone.
+        Rewriting messages to reclaim a few KB costs more than it saves (a
+        summariser call, a write, and noise in the event stream every round).
+        """
+        if not groups:
+            return set()
+        protect = max(1, int(self._token_budget * self._PRUNE_PROTECT_RATIO))
+        min_actionable = max(1, int(protect * self._PRUNE_MIN_ACTION_RATIO))
+
+        cumulative = 0
+        candidates: set[int] = set()
+        actionable = 0
+        for start in reversed(groups):
+            cost = self._group_cost_tokens(messages, start)
+            cumulative += cost
+            if cumulative <= protect:
+                continue  # still inside the protected window
+            candidates.add(start)
+            actionable += cost
+
+        if actionable < min_actionable:
+            logger.debug(
+                "pruning candidates only %d tokens (< %d threshold); skip",
+                actionable,
+                min_actionable,
+            )
+            return set()
+        return candidates
+
+    # ── Rolling summary (concatenated layers) ─────────────────────────────
 
     def _absorb_dropped(self, to_drop: list[dict[str, Any]]) -> None:
-        """Fold dropped messages into the rolling summary.
+        """Fold dropped messages into the rolling summary by CONCATENATION.
 
-        A checkpoint's report is written right AFTER the rounds it describes,
-        with full live context — so everything dropped BEFORE the checkpoint
-        is covered by it and never re-summarized (verbatim merge, zero extra
-        loss). Only the gaps AFTER a consumed checkpoint (rounds that happened
-        since the report) go through the summarizer.
+        The dropped span becomes ONE new section appended after the existing
+        layers, separated by ``---``; **older layers are never re-summarized**.
+        Re-summarizing an already-summarized text is the fastest way to lose
+        detail, so every layer keeps the wording it was first written with.
+
+        (Splitting overflowing layers into an on-disk archive — instead of
+        condensing them in place — is a separate, later change.)
         """
-        remaining = list(to_drop)
-        pieces: list[tuple[str, str]] = []  # ("gap"|"checkpoint", text)
-        consumed: set[str] = set()
-        for cp in self._pending_checkpoints:
-            idx = next(
-                (
-                    i
-                    for i, m in enumerate(remaining)
-                    if m.get("role") == "assistant" and m.get("content") == cp
-                ),
-                None,
-            )
-            if idx is None:
-                continue  # checkpoint message not dropped (yet) — stays pending
-            if pieces:
-                # gap between the previous consumed checkpoint and this one
-                pieces.append(("gap", self._messages_to_text(remaining[:idx])))
-            # else: everything before the FIRST checkpoint is covered by it
-            pieces.append(("checkpoint", cp))
-            consumed.add(cp)
-            remaining = remaining[idx + 1 :]
-        if remaining:
-            # trailing gap after the last consumed checkpoint — or, when no
-            # checkpoint fell in the dropped range at all, the whole range
-            pieces.append(("gap", self._messages_to_text(remaining)))
-        self._pending_checkpoints = [
-            c for c in self._pending_checkpoints if c not in consumed
-        ]
+        text = self._messages_to_text(to_drop)
+        new_section = self._summarizer(text) if text.strip() else ""
 
-        # Merge: old summary, then pieces chronologically. Checkpoints go in
-        # raw; each gap gets one summarizer call (gaps are small).
         sections: list[str] = []
         if self._rolling_summary:
             sections.append(self._rolling_summary)
-        for kind, text in pieces:
-            if kind == "checkpoint":
-                sections.append(text)
-            else:
-                sections.append(self._summarizer(text))
+        if new_section:
+            sections.append(new_section)
         combined = "\n\n---\n\n".join(sections)
 
-        # Cap: only when the whole summary overflows do we condense — this
-        # is the single lossy step, and it hits the oldest layers first in
-        # practice (newest checkpoints keep near-original wording).
         if count_tokens(combined) > self._summary_cap:
-            combined = self._summarizer(
-                f"Condense this summary to under {self._summary_cap} tokens "
-                f"while preserving key facts:\n\n{combined}"
-            )
+            combined = self._fit_within_cap(combined)
         self._rolling_summary = combined
+
+    def _fit_within_cap(self, combined: str) -> str:
+        """Bring an over-cap summary back in budget by ARCHIVING old layers.
+
+        The accumulated text is **never re-summarized**: re-summarizing an
+        already-summarized text is exactly the layer-by-layer decay that the
+        concatenation strategy exists to prevent. Instead the oldest layers
+        move to disk and leave a pointer line behind, which the model can
+        follow with ``recall_summary`` (archive + recall are designed as a
+        pair — one without the other is silent data loss).
+
+        A single oversized layer has nothing older to archive, so it is the
+        one case where the summarizer is still asked to condense.
+        """
+        layers = split_layers(combined)
+        if len(layers) <= 1:
+            return self._summarizer(
+                f"Condense this summary to under {self._summary_cap} tokens "
+                f"while preserving key facts://n//n{combined}"
+            )
+
+        # Keep the newest layers that fit ~70% of the cap; archive the rest.
+        target = max(1, int(self._summary_cap * 0.7))
+        keep: list[str] = []
+        used = 0
+        for layer in reversed(layers):
+            cost = count_tokens(layer)
+            if keep and used + cost > target:
+                break
+            keep.insert(0, layer)
+            used += cost
+
+        archived = layers[: len(layers) - len(keep)]
+        if not archived:
+            return combined
+
+        files = archive_layers(archived, conversation_id=self._session_id)
+        pointer = pointer_line(files)
+        parts = ([pointer] if pointer else []) + keep
+        result = "\n\n---\n\n".join(parts)
+
+        if count_tokens(result) > self._summary_cap:
+            result = "\n\n---\n\n".join(([pointer] if pointer else []) + layers[-1:])
+        logger.info(
+            "Archived %d old summary layer(s) (%s); rolling summary now %d tokens",
+            len(archived),
+            files[:1] or "-",
+            count_tokens(result),
+        )
+        # Same reasoning as the compaction event: without a record here,
+        # "why did that stretch of summary disappear?" has no answer.
+        self._emit_trace(
+            EVENT_SUMMARY_ARCHIVED,
+            summary=(
+                f"摘要层归档：{len(archived)} 层移入 summaries/"
+                f"（{files[0] if files else '-'}），滚动摘要压缩至 "
+                f"{count_tokens(result)} tokens"
+            ),
+            archived_layers=len(archived),
+            files=files[:3],
+            summary_tokens=count_tokens(result),
+        )
+        return result
+
 
     def _messages_to_text(self, messages: list[dict[str, Any]]) -> str:
         """Convert messages to readable text for summarization."""

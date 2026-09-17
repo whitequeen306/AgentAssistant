@@ -40,6 +40,7 @@ from agent_assistant.tools.system_tools import (
     SetVolumeTool,
     ToggleNotificationsTool,
 )
+from agent_assistant.tools.recall_summary import RecallSummaryTool
 from agent_assistant.tools.tool_archive import RecallToolResultTool
 from agent_assistant.tools.ui_automation import (
     UiClickTool,
@@ -48,7 +49,11 @@ from agent_assistant.tools.ui_automation import (
     UiScrollTool,
     UiTypeTool,
 )
-from agent_assistant.tools.web_tools import ReadPageTool, WebSearchTool
+from agent_assistant.tools.web_tools import (
+    ReadDocumentTool,
+    ReadPageTool,
+    WebSearchTool,
+)
 
 # Tools that exist in the desktop app but make no sense (or are unwanted)
 # when the engine runs embedded under LianYu:
@@ -136,9 +141,12 @@ def _register_common_tools() -> None:
     # Web + academic
     tool_registry.register(WebSearchTool())
     tool_registry.register(ReadPageTool())
+    tool_registry.register(ReadDocumentTool())
     tool_registry.register(SearchPapersTool())
     # Tool-result archive recall (compaction/stubbing pointers point here)
     tool_registry.register(RecallToolResultTool())
+    # Archived rolling-summary layers (pointer lines in the context point here)
+    tool_registry.register(RecallSummaryTool())
     # Session / Notify
     tool_registry.register(CreateSessionTool())
     tool_registry.register(NotifyTool())

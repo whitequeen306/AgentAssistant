@@ -18,6 +18,7 @@ import threading
 from typing import Any, Callable
 
 from agent_assistant.llm.client import llm_client
+from agent_assistant.memory.tool_summary import summarize_tool_result
 from agent_assistant.tools.registry import ToolRegistry
 
 from .archive import TaskArchive, TaskArchiveError
@@ -74,25 +75,6 @@ def _parse_args(raw: str) -> dict[str, Any]:
         return parsed if isinstance(parsed, dict) else {}
     except json.JSONDecodeError:
         return {}
-
-
-def _tool_summary(tool: str, args: dict[str, Any], result_dict: dict[str, Any]) -> str:
-    """One-line L1 summary used both for the trace and for aged-off stubs."""
-    ok = result_dict.get("ok", False)
-    key = ""
-    for field in ("root", "path", "query", "url", "name", "src"):
-        value = args.get(field)
-        if isinstance(value, str) and value:
-            key = value[:80]
-            break
-    data = result_dict.get("data")
-    detail = ""
-    if isinstance(data, dict):
-        if isinstance(data.get("count"), int):
-            detail = f" count={data['count']}"
-        elif isinstance(data.get("content"), str):
-            detail = f" chars={len(data['content'])}"
-    return f"{tool}({key}) → {'ok' if ok else 'fail'}{detail}"
 
 
 def _age_off_tool_results(
@@ -286,12 +268,23 @@ def run_task_loop(
                             archive.log_raw(tool_name, args, result_dict)
                         except TaskArchiveError:
                             logger.warning("L0 write failed for %s", spec.task_id[:8])
-                    summary = _tool_summary(tool_name, args, result_dict)
+                    # Same categorical templates the main agent's context
+                    # uses (11 categories + failure classification), so the
+                    # trace and the aged-off stubs read the same everywhere.
+                    summary = summarize_tool_result(tool_name, args, result_dict)
                     activity.append(summary)
                     _log_trace(archive, "tool", {"summary": summary, "turn": turn + 1})
                     emit(
                         "activity",
-                        {"label": summary[:160], "turn": turn + 1, "max_turns": max_turns},
+                        {
+                            # The categorical summary does not repeat the tool
+                            # name on success ("命中 3 处…"), but the activity
+                            # feed is a UI list of "what is it doing" — it
+                            # reads wrong without it. Prepend, then cap.
+                            "label": f"{tool_name}：{summary}"[:160],
+                            "turn": turn + 1,
+                            "max_turns": max_turns,
+                        },
                     )
                     if evidence_extractor is not None and result.ok:
                         try:

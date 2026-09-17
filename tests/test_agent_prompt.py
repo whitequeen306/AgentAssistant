@@ -72,13 +72,27 @@ def test_prompt_emoji_exception_excludes_tool_content():
     assert "工具返回" in SYSTEM_PROMPT or "工具内容" in SYSTEM_PROMPT
 
 
-def test_prompt_includes_life_task_habits():
-    assert "常见生活任务" in SYSTEM_PROMPT
+def test_prompt_includes_study_task_habits():
+    # Habits section is now study-scoped (learning loop), not generic life tasks.
+    assert "常见学习任务" in SYSTEM_PROMPT
+    assert "学习闭环" in SYSTEM_PROMPT
     assert "web_search" in SYSTEM_PROMPT
     assert "save_note" in SYSTEM_PROMPT
     assert "list_files" in SYSTEM_PROMPT
+    assert "read_file" in SYSTEM_PROMPT
     # Habits are guidance, not a hardcoded pipeline
     assert "非固定流程" in SYSTEM_PROMPT
+
+
+def test_prompt_identity_is_study_agent_not_desktop_helper():
+    # Product positioning: 大学生自主学习智能体, not a generic desktop assistant.
+    assert "大学生自主学习智能体" in SYSTEM_PROMPT
+    assert "桌面助手" not in SYSTEM_PROMPT
+    # The learning loop must be named end-to-end in the prompt.
+    for stage in ("精读", "调研", "沉淀", "自测", "复习"):
+        assert stage in SYSTEM_PROMPT, f"learning-loop stage {stage} missing"
+    # Study data stays local.
+    assert "不出本机" in SYSTEM_PROMPT
 
 
 def test_prompt_describes_subagent_orchestration():

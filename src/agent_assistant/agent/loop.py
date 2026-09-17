@@ -27,6 +27,17 @@ from agent_assistant.config import settings
 from agent_assistant.llm.client import llm_client
 from agent_assistant.memory.manager import MemoryManager
 from agent_assistant.memory.service import memory_service
+from agent_assistant.memory.session_trace import (
+    EVENT_LLM,
+    EVENT_LLM_ERROR,
+    EVENT_TOOL,
+    EVENT_TURN_END,
+    EVENT_TURN_START,
+    EVENT_USER,
+    session_trace,
+)
+from agent_assistant.memory.token_counter import count_messages_tokens
+from agent_assistant.memory.tool_summary import summarize_tool_result
 from agent_assistant.subagents.context import (
     AgentExecutionContext,
     bind_execution_context,
@@ -37,6 +48,15 @@ from agent_assistant.tools.sanitize import public_llm_error, sanitize_error
 from agent_assistant.tools.tool_archive import tool_archive
 
 logger = logging.getLogger(__name__)
+
+
+def _model_info() -> dict[str, str]:
+    """Model identity for the event stream.
+
+    Reads it lazily (and defensively) so a test double without a ``model``
+    attribute still lets tracing work.
+    """
+    return {"id": getattr(llm_client, "model", None) or settings.deepseek_model}
 
 _STOP_MESSAGE = "[已停止生成]"
 
@@ -142,10 +162,15 @@ class AgentLoop:
         # Per-loop short-term window — must NOT be the process-global manager,
         # or conversation A’s compaction summary bleeds into conversation B.
         self._memory_manager = memory_manager or MemoryManager(
-            token_budget=settings.memory_token_budget,
+            token_budget=settings.effective_memory_budget,
             summary_cap=settings.memory_summary_cap,
-            soft_rounds=settings.memory_soft_rounds,
         )
+        # Compaction/pruning events need to land in THIS session's event
+        # stream. Attached even for an injected manager: the trace is
+        # redirected to a temp dir under pytest (see tests/conftest.py).
+        self._memory_manager.attach_trace(session_trace, self._conversation_id)
+        # User-turn counter for the event stream (turn_start / turn_end).
+        self._turn_no = 0
         # Serializes chat/load_history/reset on THIS loop (e.g. double-send on
         # the same conversation). Cross-conversation isolation is AgentPool's job.
         self._lock = threading.RLock()
@@ -231,14 +256,41 @@ class AgentLoop:
             cancel_event=self._cancel,
         )
         self._cancel.clear()
+        # Event-stream boundary for this user turn. turn_start/turn_end bracket
+        # everything below, so an auditor can slice events by turn.
+        self._turn_no += 1
+        turn = self._turn_no
+        session_trace.event(
+            self._conversation_id, EVENT_TURN_START, turn=turn,
+            summary=user_message,
+        )
         with bind_execution_context(context), bind_cancel(self._cancel):
             # Refresh system prompt with memory context (profile + rolling summary)
             self._refresh_system_prompt()
 
             # Append user message
             self._messages.append({"role": "user", "content": user_message})
+            session_trace.event(
+                self._conversation_id, EVENT_USER, turn=turn,
+                summary=user_message,
+                chars=len(user_message),
+            )
 
-            return await self._run_rounds()
+            try:
+                reply = await self._run_rounds()
+            except Exception as exc:
+                session_trace.event(
+                    self._conversation_id, EVENT_TURN_END, turn=turn, ok=False,
+                    error_category=type(exc).__name__,
+                    summary=f"回合异常结束：{type(exc).__name__}",
+                )
+                raise
+            session_trace.event(
+                self._conversation_id, EVENT_TURN_END, turn=turn,
+                summary=f"回合结束，回复 {len(reply or '')} 字符",
+                chars=len(reply or ""),
+            )
+            return reply
 
     def _emit_event(self, event_type: str, content: Any = None) -> None:
         """Emit an event attributed to the currently bound execution turn."""
@@ -296,8 +348,13 @@ class AgentLoop:
             # anything, refresh the system prompt immediately so the rolling
             # summary is visible in THIS turn's next API call — otherwise the
             # dropped task context only reappears on the next user turn.
+            # Dropping is only allowed on the turn's FIRST model call: from
+            # then on the model is mid-task, and removing the messages that
+            # produced its current state makes it lose the thread (it still
+            # sees the latest tool results, but not why it ran them). Later
+            # rounds shrink payloads only and defer dropping to the next turn.
             dropped_before = self._memory_manager.dropped_count
-            self._messages = self._compact_messages()
+            self._messages = self._compact_messages(allow_dropping=round_idx == 0)
             if self._memory_manager.dropped_count != dropped_before:
                 self._refresh_system_prompt()
 
@@ -334,6 +391,14 @@ class AgentLoop:
                     round_idx + 1,
                     len(self._messages),
                     self._find_orphaned_tool_calls(),
+                )
+                session_trace.event(
+                    self._conversation_id, EVENT_LLM_ERROR, turn=self._turn_no,
+                    ok=False,
+                    error_category=type(exc).__name__,
+                    summary=f"模型调用失败：{type(exc).__name__}",
+                    model=_model_info(),
+                    round=round_idx + 1,
                 )
                 raise RuntimeError(public_llm_error(exc)) from exc
 
@@ -420,6 +485,17 @@ class AgentLoop:
                 self._messages.append(assistant_tc)
                 if content_parts:
                     turn_narrations.append("".join(content_parts))
+
+                session_trace.event(
+                    self._conversation_id, EVENT_LLM, turn=self._turn_no,
+                    round=round_idx + 1,
+                    summary=(
+                        f"第 {round_idx + 1} 轮：决定调用 "
+                        f"{', '.join(tc['function']['name'] for tc in tc_list)}"
+                    ),
+                    tool_calls=[tc["function"]["name"] for tc in tc_list],
+                    model=_model_info(),
+                )
 
                 for ti, tc in enumerate(tc_list):
                     if is_cancelled():
@@ -536,8 +612,9 @@ class AgentLoop:
                     # the originals retrievable via recall_tool_result).
                     # record() never raises; guard anyway so archiving can
                     # never break the turn.
+                    detail_ref: str | None = None
                     try:
-                        tool_archive.record(
+                        detail_ref = tool_archive.record(
                             conversation_id=self._conversation_id,
                             call_id=tc_id,
                             tool=fn_name,
@@ -549,6 +626,22 @@ class AgentLoop:
                             "tool_archive.record raised for '%s'", fn_name,
                             exc_info=True,
                         )
+
+                    # Event stream: one line per call carrying the SAME
+                    # one-line summary the model sees in context, plus ok /
+                    # failure category and a pointer into tool_details.jsonl.
+                    session_trace.event(
+                        self._conversation_id, EVENT_TOOL, turn=self._turn_no,
+                        round=round_idx + 1,
+                        ok=bool(result_dict.get("ok")),
+                        error_category=result_dict.get("error_category"),
+                        summary=summarize_tool_result(
+                            fn_name, arguments=fn_args, result_json=result_dict
+                        ),
+                        detail_ref=detail_ref,
+                        tool=fn_name,
+                        call_id=tc_id,
+                    )
 
                     # Notify UI of the result (best-effort, AFTER the pairing
                     # invariant is satisfied so a handler crash can't break
@@ -624,6 +717,14 @@ class AgentLoop:
             self._messages.append(assistant_final)
 
             self._emit_event("response", full_content)
+            session_trace.event(
+                self._conversation_id, EVENT_LLM, turn=self._turn_no,
+                round=round_idx + 1,
+                summary=full_content,
+                final_answer=True,
+                tokens={"window": count_messages_tokens(self._messages)},
+                model=_model_info(),
+            )
 
             if summary_due:
                 # Forced text-only round. Research turns resume with tools;
@@ -633,10 +734,10 @@ class AgentLoop:
                 tool_rounds_since_summary = 0
                 self._pending_summary_nudge = False
                 force_text_round = False
-                # The report doubles as a pre-made summary: when compaction
-                # later drops the rounds it covers, it's merged verbatim
-                # instead of re-summarizing them from raw messages.
-                self._memory_manager.record_checkpoint(content)
+                # The report is no longer registered as a compaction
+                # checkpoint: compaction now *concatenates* summary layers
+                # (older layers are never re-summarized), which removes the
+                # detail-loss failure mode that checkpoints existed to prevent.
                 # The nudge did its job (the forced text round happened);
                 # keeping it in history would waste context every round.
                 self._remove_progress_nudges()
@@ -689,13 +790,22 @@ class AgentLoop:
         if getattr(settings, "hosted_narration", False):
             base_prompt = base_prompt.rstrip() + "\n\n" + _HOSTED_NARRATION_SECTION.strip() + "\n"
         additions = memory_service.build_profile_additions()
+        study_profile = memory_service.build_study_profile_section()
+        if study_profile:
+            additions += study_profile
         summary = self._memory_manager.build_context_prefix()
         full_prompt = base_prompt + additions + summary
         self._messages[0] = {"role": "system", "content": full_prompt}
 
-    def _compact_messages(self) -> list[dict[str, Any]]:
-        """Run this conversation's memory compaction if over token budget."""
-        return self._memory_manager.maybe_compact(self._messages)
+    def _compact_messages(self, *, allow_dropping: bool = True) -> list[dict[str, Any]]:
+        """Run this conversation's memory compaction if over token budget.
+
+        ``allow_dropping=False`` shrinks old payloads but never removes a
+        message — see ``MemoryManager.maybe_compact``.
+        """
+        return self._memory_manager.maybe_compact(
+            self._messages, allow_dropping=allow_dropping
+        )
 
     def _find_orphaned_tool_calls(self) -> list[dict[str, Any]]:
         """Detect assistant(tool_calls) ids lacking an immediate tool reply.

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from typing import Any, Callable
 
@@ -38,6 +39,14 @@ SCENE_INJECTION_TEMPLATE = (
 
 # J23 (08 §4.6): right-click file/folder invocation → injected to the agent;
 # reading is done by the agent via existing read_file/list_files tools.
+
+# Chat input's 深度研究 toggle → appended to the agent input for THAT turn
+# only (not persisted into the visible user message).
+RESEARCH_MODE_HINT = (
+    "[深度研究模式已开启] 本条消息请调用 dispatch_research 派出调研子代理完成："
+    "多轮搜索、交叉核验、产出带来源的报告。报告完成后你只需用 2-4 句话提炼要点和后续建议，"
+    "不要整篇复述。若该消息明显不需要调研（纯闲聊/本地小操作），可如实说明并直接处理。"
+)
 # Interactive-reading contract: the agent NARRATES while working — a spoken
 # opening line before the first read (streams live into the chat bubble),
 # short progress lines between reads, then a wrap-up with follow-up options.
@@ -52,7 +61,9 @@ FILE_INVOKE_TEMPLATE = (
     "再挑最关键的 1-3 个文件读）。\n"
     "3. 内容很长需要分页时，每次翻页前用一句话汇报进度（「前半部分讲的是……继续看」）。\n"
     "4. 读完给出小结：这是什么 + 核心内容 3-5 句 + 主动给出 2-4 个后续选项"
-    "（如：深入讲解某部分 / 出几道题检验理解 / 对比调研相关主题 / 整理成学习笔记）。\n"
+    "（如：深入讲解某部分 / 出几道题检验理解 / 对比调研相关主题 / 整理成学习笔记）。"
+    "给出后续选项时，若适合自测，提醒用户：输入框上方有「基于刚才的文件出题」按钮，"
+    "点一下就能让练习室就这份材料出题检验学习效果。\n"
     "全部解说和总结用中文。"
 )
 
@@ -67,21 +78,23 @@ _FILE_TYPE_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
      "这是代码文件：说明语言、做什么、关键函数/结构。"),
     (("md", "txt"), "这是文本文档。"),
 )
-_DIR_TYPE_HINT = "这是一个文件夹：先列出结构，判断它是什么（课程资料/项目/资料合集），再挑关键文件读。"
+_DIR_TYPE_HINT = (
+    "这是一个文件夹：先列出结构，判断它是什么（课程资料/项目/资料合集），再挑关键文件读。"
+)
 
 
 def _file_kind(p) -> str:
-    from pathlib import Path as _P
+    from pathlib import Path as _Path
 
-    if _P(p).is_dir():
+    if _Path(p).is_dir():
         return "文件夹"
-    return f"文件《{_P(p).name}》"
+    return f"文件《{_Path(p).name}》"
 
 
 def _file_type_hint(p) -> str:
-    from pathlib import Path as _P
+    from pathlib import Path as _Path
 
-    pp = _P(p)
+    pp = _Path(p)
     if pp.is_dir():
         return _DIR_TYPE_HINT
     suffix = pp.suffix.lower().lstrip(".")
@@ -148,6 +161,13 @@ class ApiBridge:
         self._ptt_active = False
         self._dictation = None  # J1-B: streaming dictation session
         self._pending_file: str | None = None  # J23: path awaiting UI init
+        # Empty-conversation start chips: LLM results cached per
+        # (profile + library titles) so revisits are instant. The frontend
+        # prefetches on profile/library changes; in-flight dedups concurrent
+        # triggers for the same key (e.g. init warmup racing a user action).
+        self._chips_cache: dict[str, list[dict[str, str]]] = {}
+        self._chips_inflight: dict[str, threading.Event] = {}
+        self._chips_lock = threading.Lock()
 
     # ─── Wiring (called from launch.py) ────────────────────────────
 
@@ -308,6 +328,38 @@ class ApiBridge:
 
     # ─── Init payload ──────────────────────────────────────────────
 
+    def due_milestone_reminders(self, within_days: int = 14) -> list[dict[str, Any]]:
+        """节点提醒 —— ``goal_store.due_milestones()`` 的第一个消费者。
+
+        数据层早就就绪，但没有任何代码去调它：用户不主动打开「规划」tab，
+        就永远看不到「预报名还有 3 天」。这类「写了但没通电」的模块比死代码
+        更隐蔽——它不报错，只是安静地不工作。
+        """
+        try:
+            from datetime import date
+
+            from agent_assistant.goals.store import goal_store
+
+            today = date.today()
+            out: list[dict[str, Any]] = []
+            for track, m in goal_store.due_milestones(within_days=within_days):
+                out.append(
+                    {
+                        "track_id": track.track_id,
+                        "track_title": track.title,
+                        "key": m.key,
+                        "label": m.label,
+                        "due_at": m.due_at,
+                        # 按自然日差算，避免出现「还有 0 天但其实就在明天」
+                        "days": (date.fromtimestamp(m.due_at) - today).days,
+                        "note": m.note,
+                    }
+                )
+            return out
+        except Exception as e:  # noqa: BLE001 — 提醒是锦上添花，绝不致命
+            logger.debug("due_milestone_reminders failed: %s", e)
+            return []
+
     def get_init_data(self) -> dict[str, Any]:
         """Everything the frontend needs on startup (one round-trip)."""
         from agent_assistant.config import settings
@@ -344,6 +396,8 @@ class ApiBridge:
             "model": settings.deepseek_model,
             "version": "0.1.0",
             "drag_params": self.drag_params(),
+            # 到期节点提醒（due_milestones 的消费者；无目标轨道时为空数组）
+            "due_milestones": self.due_milestone_reminders(),
         }
 
     # ─── Subagent tasks (callable from JS) ─────────────────────────
@@ -482,6 +536,7 @@ class ApiBridge:
         msg_id: str | None = None,
         research_sources: list | None = None,
         context_attachment: dict | None = None,
+        research: bool = False,
     ) -> None:
         """Called from JS when user sends a chat message.
 
@@ -492,6 +547,8 @@ class ApiBridge:
           { primary: "none"|"notes"|"knowledge", notes: [...], files: [...] }
         ``research_sources`` (legacy): flat note/file list → treated as attached
         sources with primary inferred from kinds.
+        ``research``: chat-input 深度研究 toggle — biases THIS turn to
+        dispatch_research via a non-persisted hint.
         """
         from agent_assistant.context_attachment import (
             apply_context_attachment,
@@ -552,6 +609,9 @@ class ApiBridge:
         hint = format_attachment_hint(att)
         if hint:
             agent_input = f"{agent_input}\n\n{hint}"
+        if research and not scene:
+            # Not persisted (add_message already ran) — biases this turn only.
+            agent_input = f"{agent_input}\n\n{RESEARCH_MODE_HINT}"
 
         threading.Thread(
             target=self._process_message,
@@ -847,6 +907,32 @@ class ApiBridge:
         ui_store.set_setting(key, str(value))
         self._apply_setting(key, str(value))
 
+    def fetch_provider_models(
+        self, api_key: str = "", base_url: str = ""
+    ) -> dict[str, Any]:
+        """Fetch the OpenAI-compatible /models list for the given credentials.
+
+        Falls back to the currently configured key/url when omitted. Returns
+        {ok, models: [id...]} sorted alphabetically.
+        """
+        from agent_assistant.config import settings as app_settings
+
+        key = (api_key or "").strip() or app_settings.deepseek_api_key
+        url = (base_url or "").strip() or app_settings.deepseek_base_url
+        if not key:
+            return {"ok": False, "error": "请先填写 API Key"}
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(api_key=key, base_url=url)
+            ids = sorted({m.id for m in client.models.list() if m.id})
+            if not ids:
+                return {"ok": False, "error": "该服务未返回任何模型"}
+            return {"ok": True, "models": ids}
+        except Exception as e:  # noqa: BLE001 — surfaced to the UI
+            logger.warning("fetch_provider_models failed: %s", e)
+            return {"ok": False, "error": f"拉取失败: {e}"}
+
     # ─── Tool permissions (settings page: 自动运行 / 需要询问) ─────
 
     def get_tool_permissions(self) -> list[dict[str, str]]:
@@ -928,6 +1014,103 @@ class ApiBridge:
         llm_client._async_client = None
 
     # ─── Library (callable from JS) ────────────────────────────────
+
+    @staticmethod
+    def _apply_track_profile(profile: dict) -> None:
+        """把当前目标轨道的场景信息写进画像（``TrackSpec.chip_hints`` 的消费者）。
+
+        用户建了「2027 考研」轨道，开场建议就该围绕择校/分数线，而不是通用
+        建议——否则 spec 里那些 chip_hints 永远只是没人读的死数据。
+        """
+        try:
+            from agent_assistant.goals.registry import get_spec
+            from agent_assistant.goals.store import goal_store
+
+            for track in goal_store.active_tracks():
+                spec = get_spec(track.kind)
+                if spec is None:
+                    continue
+                profile["track"] = f"{spec.label} · {track.title}"
+                if spec.chip_hints:
+                    profile["track_hints"] = list(spec.chip_hints)
+                return
+        except Exception as e:  # noqa: BLE001 — chips 是锦上添花，绝不致命
+            logger.debug("track profile for chips failed: %s", e)
+
+    def generate_start_chips(self) -> dict[str, Any]:
+        """Model-generated opening chips for empty conversations.
+
+        Grounded in the study profile + library titles; cached per
+        profile+library so revisits are instant. Never fails: any error
+        yields an empty chip list and the frontend keeps its local chips.
+        """
+        import hashlib
+
+        from agent_assistant.config import settings
+        from agent_assistant.ui.chips import generate_smart_chips
+        from agent_assistant.ui.store import ui_store
+
+        def prof(suffix: str) -> str:
+            return (ui_store.get_setting(f"profile_{suffix}", "") or "").strip()
+
+        profile = {
+            "major": prof("major"),
+            "grade": prof("grade"),
+            "goal": prof("goal"),
+            "note": prof("note"),
+        }
+        # 目标轨道：让开场建议贴合当前场景（TrackSpec.chip_hints 的消费者）
+        self._apply_track_profile(profile)
+        if not any(profile.values()):
+            return {"ok": True, "chips": []}
+
+        notes_dir = settings.resolved_notes_dir
+        note_titles = [
+            f.stem.split("_", 2)[-1] if "_" in f.stem else f.stem
+            for f in sorted(notes_dir.glob("*.md"), reverse=True)[:5]
+        ] if notes_dir.exists() else []
+        try:
+            from agent_assistant.knowledge.service import knowledge_service
+            kb_titles = [
+                t
+                for t in (
+                    (f.get("title") or f.get("filename") or "")
+                    for f in (knowledge_service.list_files() or [])[:5]
+                )
+                if t
+            ]
+        except Exception:  # noqa: BLE001 — grounding info is optional
+            kb_titles = []
+
+        key = hashlib.sha1(
+            json.dumps([profile, note_titles, kb_titles],
+                       ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        with self._chips_lock:
+            cached = self._chips_cache.get(key)
+            if cached is not None:
+                return {"ok": True, "chips": cached}
+            evt = self._chips_inflight.get(key)
+            owner = evt is None
+            if owner:
+                evt = threading.Event()
+                self._chips_inflight[key] = evt
+        if not owner:
+            # Another thread is generating this exact key — piggyback.
+            evt.wait(timeout=15)
+            return {"ok": True, "chips": self._chips_cache.get(key, [])}
+        try:
+            chips = generate_smart_chips(profile, note_titles, kb_titles)
+            with self._chips_lock:
+                # Cap stale entries from old profile/library states.
+                if len(self._chips_cache) >= 16:
+                    self._chips_cache.clear()
+                self._chips_cache[key] = chips
+        finally:
+            evt.set()
+            with self._chips_lock:
+                self._chips_inflight.pop(key, None)
+        return {"ok": True, "chips": chips}
 
     def list_notes(self) -> list[dict[str, Any]]:
         """Saved notes (save_note products) for the Library page."""
@@ -1039,6 +1222,80 @@ class ApiBridge:
             logger.warning("export_note failed: %s", e)
             return {"ok": False, "error": str(e)}
 
+    def _save_dialog(self, suggested: str, file_types: tuple[str, ...]) -> str | None:
+        """System save dialog; returns the chosen path or None (cancel/no window)."""
+        try:
+            import webview
+
+            from agent_assistant.ui.window import ui_window
+
+            win = ui_window.window
+            if not win:
+                return None
+            dest = win.create_file_dialog(
+                webview.SAVE_DIALOG,
+                save_filename=suggested,
+                file_types=file_types,
+            )
+            if isinstance(dest, (list, tuple)):
+                dest = dest[0] if dest else None
+            dest = str(dest).strip() if dest else ""
+            return dest or None
+        except Exception as e:  # noqa: BLE001
+            logger.warning("save dialog failed: %s", e)
+            return None
+
+    _DOCX_FILE_TYPES = (
+        "Word documents (*.docx)",
+        "All files (*.*)",
+    )
+
+    def export_note_docx(self, filename: str) -> dict[str, Any]:
+        """Export a library note as a formatted Word document (save dialog)."""
+        try:
+            from agent_assistant.export import markdown_to_docx
+
+            path = self._safe_note_path(filename)
+            if path is None:
+                return {"ok": False, "error": "note not found"}
+            title = re.sub(r"^\d{8}_\d{6}_", "", path.stem) or path.stem
+            suggested = re.sub(r'[\\/:*?"<>|]', "_", title) + ".docx"
+            dest = self._save_dialog(suggested, self._DOCX_FILE_TYPES)
+            if not dest:
+                return {"ok": False, "cancelled": True}
+            if not dest.lower().endswith(".docx"):
+                dest += ".docx"
+            markdown_to_docx(
+                path.read_text(encoding="utf-8"), dest, title=title
+            )
+            return {"ok": True, "path": dest}
+        except Exception as e:  # noqa: BLE001
+            logger.warning("export_note_docx failed: %s", e)
+            return {"ok": False, "error": str(e)}
+
+    def export_markdown_docx(self, title: str, content: str) -> dict[str, Any]:
+        """Convert markdown text (e.g. a research report) straight to .docx."""
+        try:
+            from agent_assistant.export import markdown_to_docx
+
+            text = content if isinstance(content, str) else ""
+            if not text.strip():
+                return {"ok": False, "error": "内容为空"}
+            if len(text) > 2_000_000:
+                return {"ok": False, "error": "内容过大"}
+            safe_title = re.sub(r'[\\/:*?"<>|]', "_", (title or "导出").strip())[:80]
+            suggested = safe_title + ".docx"
+            dest = self._save_dialog(suggested, self._DOCX_FILE_TYPES)
+            if not dest:
+                return {"ok": False, "cancelled": True}
+            if not dest.lower().endswith(".docx"):
+                dest += ".docx"
+            markdown_to_docx(text, dest, title=safe_title)
+            return {"ok": True, "path": dest}
+        except Exception as e:  # noqa: BLE001
+            logger.warning("export_markdown_docx failed: %s", e)
+            return {"ok": False, "error": str(e)}
+
     @staticmethod
     def _safe_note_path(filename: str):
         """Resolve a note filename under notes_dir; None if invalid/missing."""
@@ -1082,115 +1339,272 @@ class ApiBridge:
         source_id: str,
         count: int = 5,
         qtype: str = "mixed",
+        mode: str = "paper",
     ) -> dict[str, Any]:
-        """练习室: generate a quiz from library material via a direct LLM call.
+        """练习室: generate a quiz from library material.
 
-        Runs OUTSIDE the chat loop (no conversation pollution); the result is
-        a structured JSON quiz the frontend renders and grades locally.
+        Delegates to PracticeService (runs OUTSIDE the chat loop, persists a
+        session + questions); the frontend renders and grades locally.
         """
-        import json as _json
-        import re as _re
-
-        material = ""
-        source_title = source_id
-        try:
-            if source_kind == "note":
-                res = self.read_note(source_id)
-                if not res.get("ok"):
-                    return {"ok": False, "error": "笔记不存在或读取失败"}
-                material = res.get("content", "")
-            elif source_kind == "kb":
-                from agent_assistant.knowledge.service import knowledge_service
-
-                files = {
-                    f.get("file_id"): f
-                    for f in (self.list_knowledge_files() or [])
-                }
-                source_title = (files.get(source_id) or {}).get(
-                    "title", source_id
-                )
-                chunks = knowledge_service.retrieve(
-                    source_title, n_results=16
-                )
-                same_file = [
-                    c.get("content", "")
-                    for c in chunks
-                    if (c.get("file_id") or c.get("metadata", {}).get("file_id")) == source_id
-                ]
-                material = "\n\n".join(same_file or [c.get("content", "") for c in chunks])
-            else:
-                return {"ok": False, "error": f"unknown source_kind: {source_kind}"}
-        except Exception as e:  # noqa: BLE001
-            return {"ok": False, "error": f"读取材料失败: {e}"}
-
-        material = (material or "").strip()
-        if not material:
-            return {"ok": False, "error": "材料内容为空，无法出题"}
-        material = material[:24_000]
+        from agent_assistant.practice.service import practice_service
 
         try:
-            count = max(1, min(int(count), 15))
-        except (TypeError, ValueError):
-            count = 5
-
-        type_line = {
-            "choice": "全部为四选一选择题",
-            "short": "全部为简答题",
-            "mixed": "选择题与简答题混合（约各半）",
-        }.get(qtype, "选择题与简答题混合（约各半）")
-
-        system = (
-            "你是严谨的出题助手。根据给定学习材料出题用于复习自测。"
-            "只输出一个 JSON 对象，禁止 markdown 代码块、禁止任何解释文字。"
-        )
-        user = (
-            f"学习材料：\n<<<材料开始>>>\n{material}\n<<<材料结束>>>\n\n"
-            f"请出 {count} 道题（{type_line}），覆盖材料的核心知识点，"
-            "难度分布：基础 40% / 理解 40% / 应用 20%。\n"
-            '输出格式：{"title": "练习标题", "questions": ['
-            '{"type": "choice", "question": "题干", '
-            '"options": ["A. …", "B. …", "C. …", "D. …"], '
-            '"answer": 0, "explain": "解析（引用材料原句）"}, '
-            '{"type": "short", "question": "题干", '
-            '"answer": "参考答案要点", "explain": "对应材料位置/原句"}]}。'
-            "选择题 answer 为正确选项的索引（0-3）；简答题 answer 为参考答案字符串。"
-        )
-
-        try:
-            from agent_assistant.llm.client import llm_client
-
-            response = llm_client.chat(
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                temperature=0.4,
+            return practice_service.generate(
+                source_kind, source_id, count, qtype, mode
             )
-            raw = response.choices[0].message.content or ""
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 — surfaced to the UI toast
+            logger.exception("practice_generate failed")
             return {"ok": False, "error": f"出题失败: {e}"}
 
-        # Tolerant parse: strip fences, slice to the outermost JSON object.
-        cleaned = _re.sub(r"```(?:json)?", "", raw).strip()
-        start, end = cleaned.find("{"), cleaned.rfind("}")
-        if start < 0 or end <= start:
-            return {"ok": False, "error": "模型未返回有效 JSON", "raw": raw[:800]}
-        try:
-            quiz = _json.loads(cleaned[start : end + 1])
-        except _json.JSONDecodeError as e:
-            return {"ok": False, "error": f"JSON 解析失败: {e}", "raw": raw[:800]}
+    def practice_grade_short(
+        self, question_id: str, user_answer: str
+    ) -> dict[str, Any]:
+        """练习室(逐题模式): LLM-grade ONE short answer. Not persisted."""
+        from agent_assistant.practice.service import practice_service
 
-        questions = quiz.get("questions") or []
-        questions = questions[:15]
-        if not questions:
-            return {"ok": False, "error": "没有生成任何题目", "raw": raw[:800]}
-        return {
-            "ok": True,
-            "title": quiz.get("title") or f"练习：{source_title}",
-            "source_title": source_title,
-            "source_kind": source_kind,
-            "questions": questions,
-        }
+        try:
+            return practice_service.grade_short(question_id, user_answer)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("practice_grade_short failed")
+            return {"ok": False, "error": f"判分失败: {e}"}
+
+    def practice_submit(
+        self, session_id: str, answers: list | None = None
+    ) -> dict[str, Any]:
+        """练习室: submit answers.
+
+        ``answers``: [{question_id, user_answer, score?, feedback?}] — score
+        present means the frontend already graded (card mode passthrough);
+        missing score → choice graded locally, short batch-graded via LLM.
+        Persists attempts, advances Leitner cards, finalizes the session.
+        """
+        from agent_assistant.practice.service import practice_service
+
+        try:
+            return practice_service.submit(session_id, answers or [])
+        except Exception as e:  # noqa: BLE001
+            logger.exception("practice_submit failed")
+            return {"ok": False, "error": f"提交失败: {e}"}
+
+    def practice_due_info(self) -> dict[str, Any]:
+        """练习室首页: due review count + per-box distribution."""
+        from agent_assistant.practice.service import practice_service
+
+        try:
+            return {"ok": True, **practice_service.due_info()}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e), "due_count": 0, "boxes": {}}
+
+    def practice_dashboard(self) -> dict[str, Any]:
+        """练习室仪表盘: 掌握度分布 / 近14天活跃 / 连续打卡 / 薄弱知识点."""
+        from agent_assistant.practice.service import practice_service
+
+        try:
+            return {"ok": True, **practice_service.dashboard()}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)}
+
+    def practice_start_review(self, limit: int = 20) -> dict[str, Any]:
+        """练习室: start a review session from due Leitner cards."""
+        from agent_assistant.practice.service import practice_service
+
+        try:
+            return practice_service.start_review(limit)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": f"开始复习失败: {e}"}
+
+    def practice_start_wrong(self, session_id: str) -> dict[str, Any]:
+        """练习室: re-practice the wrong questions of a session."""
+        from agent_assistant.practice.service import practice_service
+
+        try:
+            return practice_service.start_wrong(session_id)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": f"错题重练失败: {e}"}
+
+    def practice_history(self, limit: int = 20) -> dict[str, Any]:
+        """练习室: recently submitted sessions (newest first)."""
+        from agent_assistant.practice.service import practice_service
+
+        try:
+            return practice_service.history(limit)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e), "sessions": []}
+
+    def practice_session_detail(self, session_id: str) -> dict[str, Any]:
+        """练习室: full replay payload of a submitted session (回看)."""
+        from agent_assistant.practice.service import practice_service
+
+        try:
+            return practice_service.session_detail(session_id)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": f"加载练习详情失败: {e}"}
+
+    def practice_save_report(self, session_id: str) -> dict[str, Any]:
+        """练习室: export a session report into the notes library."""
+        from agent_assistant.practice.service import practice_service
+
+        try:
+            return practice_service.save_report(session_id)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": f"保存报告失败: {e}"}
+
+    # ─── 目标轨道（学习库 · 规划 tab） ─────────────────────────────────
+
+    def list_goal_specs(self) -> dict[str, Any]:
+        """可新建的目标种类（含 draft 骨架，前端据此标灰「敬请期待」）。"""
+        from agent_assistant.goals.registry import all_specs
+
+        try:
+            specs = [
+                {
+                    "kind": str(s.kind),
+                    "label": s.label,
+                    "draft": s.draft,
+                    "output_fields": list(s.output_fields),
+                    "milestone_count": len(s.milestones),
+                }
+                for s in all_specs()
+            ]
+            return {"ok": True, "specs": specs}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e), "specs": []}
+
+    def list_goal_tracks(self, status: str | None = None) -> dict[str, Any]:
+        """目标轨道列表；status 为空则全部。"""
+        from agent_assistant.goals.registry import label_of
+        from agent_assistant.goals.store import goal_store
+
+        try:
+            tracks = goal_store.list_tracks(status)
+            return {
+                "ok": True,
+                "tracks": [
+                    {
+                        "track_id": t.track_id,
+                        "kind": t.kind,
+                        "kind_label": label_of(t.kind),
+                        "title": t.title,
+                        "status": t.status,
+                        "cycle_year": t.cycle_year,
+                        "config": t.config,
+                        "created_at": t.created_at,
+                        "updated_at": t.updated_at,
+                    }
+                    for t in tracks
+                ],
+            }
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e), "tracks": []}
+
+    def create_goal_track(
+        self, kind: str, title: str = "", cycle_year: int | None = None
+    ) -> dict[str, Any]:
+        from agent_assistant.goals.registry import get_spec, label_of
+        from agent_assistant.goals.store import goal_store
+
+        kind = (kind or "").strip()
+        if not get_spec(kind):
+            return {"ok": False, "error": f"未知的目标类型: {kind}"}
+        try:
+            track = goal_store.create_track(
+                kind=kind, title=title or f"{label_of(kind)}目标", cycle_year=cycle_year
+            )
+            milestones = goal_store.list_milestones(track.track_id)
+            return {
+                "ok": True,
+                "track_id": track.track_id,
+                "track": {
+                    "track_id": track.track_id,
+                    "kind": track.kind,
+                    "kind_label": label_of(track.kind),
+                    "title": track.title,
+                    "status": track.status,
+                    "cycle_year": track.cycle_year,
+                    "config": track.config,
+                    "created_at": track.created_at,
+                    "updated_at": track.updated_at,
+                },
+                "milestone_count": len(milestones),
+            }
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": f"创建失败: {e}"}
+
+    def update_goal_track(
+        self,
+        track_id: str,
+        title: str | None = None,
+        cycle_year: int | None = None,
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        from agent_assistant.goals.store import goal_store
+
+        try:
+            track = goal_store.update_track(
+                track_id, title=title, cycle_year=cycle_year, status=status
+            )
+            if track is None:
+                return {"ok": False, "error": "目标不存在"}
+            return {"ok": True, "track_id": track.track_id, "cycle_year": track.cycle_year}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": f"更新失败: {e}"}
+
+    def delete_goal_track(self, track_id: str) -> dict[str, Any]:
+        from agent_assistant.goals.store import goal_store
+
+        try:
+            return {"ok": bool(goal_store.delete_track(track_id))}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": f"删除失败: {e}"}
+
+    def list_goal_milestones(self, track_id: str) -> dict[str, Any]:
+        from agent_assistant.goals.store import goal_store
+
+        try:
+            ms = goal_store.list_milestones(track_id)
+            return {
+                "ok": True,
+                "milestones": [
+                    {
+                        "track_id": m.track_id,
+                        "key": m.key,
+                        "label": m.label,
+                        "due_at": m.due_at,
+                        "done": m.done,
+                        "note": m.note,
+                    }
+                    for m in ms
+                ],
+            }
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e), "milestones": []}
+
+    def set_goal_milestone(
+        self,
+        track_id: str,
+        key: str,
+        due_date: str | None = None,
+        done: bool | None = None,
+    ) -> dict[str, Any]:
+        """改节点。``due_date`` 为 YYYY-MM-DD（本地零点）；传了即钉住，改年份不再覆盖。"""
+        from datetime import datetime
+
+        from agent_assistant.goals.store import goal_store
+
+        due_at: float | None = None
+        if due_date:
+            try:
+                d = datetime.strptime(due_date.strip()[:10], "%Y-%m-%d")
+                due_at = datetime(d.year, d.month, d.day).timestamp()
+            except ValueError:
+                return {"ok": False, "error": f"日期格式应为 YYYY-MM-DD: {due_date}"}
+        try:
+            m = goal_store.set_milestone(track_id, key, due_at=due_at, done=done)
+            if m is None:
+                return {"ok": False, "error": "节点不存在"}
+            return {"ok": True, "due_at": m.due_at, "done": m.done}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": f"保存失败: {e}"}
 
     @staticmethod
     def _upsert_note_title(text: str, title: str) -> str:
@@ -1392,91 +1806,12 @@ class ApiBridge:
         elif kind == "final":
             self._push_event("stt_final", {"text": text})
 
-    # ─── Background report routing (→ dedicated pinned conversations) ───────
-
     @property
     def report_silent(self) -> bool:
-        """True when the CURRENT thread is a background report run —
-        on_agent_event (same thread) skips streaming to the current view.
-        Scoped per-thread so the user's own chat (a different thread) still
-        streams normally."""
+        """True when the CURRENT thread is a background run — on_agent_event
+        (same thread) skips streaming to the current view. Scoped per-thread
+        so the user's own chat (a different thread) still streams normally."""
         return getattr(_report_tls, "silent", False)
-
-    # Back-compat alias (older call sites / tests used the perf-specific name).
-    perf_silent = report_silent
-
-    def _run_silent_report(
-        self,
-        conv_title: str,
-        message: str,
-        event_type: str,
-        notify_message: str,
-        thread_name: str,
-    ) -> None:
-        """Shared plumbing for daemon reports (perf anomaly, morning briefing).
-
-        Finds/creates + pins the conv, runs the agent THERE with the UI stream
-        suppressed for THIS thread only (no pollution of the current chat, and
-        the user's concurrent chat is unaffected), then pushes a clickable
-        notification event the user can open to view the report.
-        """
-        from agent_assistant.ui.store import ui_store
-
-        try:
-            conv = ui_store.find_or_create_conversation(conv_title)
-            if not conv.get("pinned"):
-                ui_store.set_pinned(conv["id"], True)
-            conv_id = conv["id"]
-        except Exception as e:
-            logger.warning("%s conv setup failed: %s", conv_title, e)
-            return
-
-        def _run() -> None:
-            _report_tls.silent = True  # scoped to THIS thread — user's chat unaffected
-            try:
-                # Persist the trigger as the user-side message so the report log
-                # shows what each run refers to (_process_message only saves
-                # the reply). Runs on the conversation's own AgentLoop
-                # (AgentPool) — never touches the user's active chat history.
-                ui_store.add_message(conv_id, "user", message)
-                self._process_message(message, conv_id)
-            except Exception as e:
-                logger.error("%s report processing failed: %s", conv_title, e)
-            finally:
-                _report_tls.silent = False
-            self._push_event(event_type, {
-                "conv_id": conv_id,
-                "title": conv_title,
-                "message": notify_message,
-            })
-            self._push_event("conversations_changed", {})
-
-        threading.Thread(target=_run, daemon=True, name=thread_name).start()
-
-    def report_perf(self, message: str) -> None:
-        """Route a perf-anomaly report to the dedicated '性能检测' conversation."""
-        self._run_silent_report(
-            conv_title="性能检测",
-            message=message,
-            event_type="perf_report",
-            notify_message="你有新的电脑性能报告请查收",
-            thread_name="perf-report",
-        )
-
-    def report_briefing(self, message: str) -> None:
-        """Route the morning briefing to the dedicated '晨间播报' conversation.
-
-        Same delivery as 性能检测: silent run in its own pinned conversation,
-        then a clickable system line in the current chat — the agent never
-        hijacks the user's active window mid-task.
-        """
-        self._run_silent_report(
-            conv_title="晨间播报",
-            message=message,
-            event_type="briefing_report",
-            notify_message="晨间播报已生成，点击查看",
-            thread_name="briefing-report",
-        )
 
     # ─── Backend → Frontend push ───────────────────────────────────
 

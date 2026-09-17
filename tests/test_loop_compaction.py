@@ -70,6 +70,9 @@ async def test_midturn_compaction_keeps_task_and_injects_summary(
         def build_profile_additions(self) -> str:
             return ""
 
+        def build_study_profile_section(self) -> str:
+            return ""
+
     monkeypatch.setattr(
         "agent_assistant.agent.loop.memory_service", _FakeMemoryService()
     )
@@ -105,7 +108,6 @@ async def test_midturn_compaction_keeps_task_and_injects_summary(
         memory_manager=MemoryManager(
             token_budget=300,  # tiny: compaction fires once the old turn is fat
             summary_cap=200,
-            soft_rounds=1,
             summarizer=_mock_summarizer,
         )
     )

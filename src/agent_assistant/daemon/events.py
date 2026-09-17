@@ -19,8 +19,6 @@ logger = logging.getLogger(__name__)
 
 
 class EventType(Enum):
-    PERF_ANOMALY = "perf_anomaly"
-    MORNING_BRIEFING = "morning_briefing"
     RIGHT_CLICK = "right_click"
     VOICE_COMMAND = "voice_command"
     HOTKEY = "hotkey"

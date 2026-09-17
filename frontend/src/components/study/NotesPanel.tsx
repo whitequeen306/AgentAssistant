@@ -1,12 +1,18 @@
 import { useEffect, useState } from "react";
-import { Download, NotebookPen, Pencil, Trash2 } from "lucide-react";
+import { FileDown, NotebookPen, Pencil, Trash2 } from "lucide-react";
 import { IconButton, Button } from "@/components/ui";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Modal } from "@/components/ui/Modal";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { Markdown } from "@/components/Markdown";
 import { actions } from "@/lib/store";
-import { deleteNote, exportNote, listNotes, readNote, updateNote } from "@/lib/library";
+import {
+  deleteNote,
+  exportNoteDocx,
+  listNotes,
+  readNote,
+  updateNote,
+} from "@/lib/library";
 import type { Note } from "@/types";
 
 /** 学习库 · 资料面板：笔记列表 + 查看/编辑（原资料库页迁移）。 */
@@ -64,12 +70,12 @@ export function NotesPanel() {
     }
   };
 
-  /** 导出笔记到本机（系统另存为对话框）；取消静默，成功/失败提示。 */
+  /** 导出为排版化 Word（markdown→docx 程序转换）；取消静默，成功/失败提示。 */
   const exportOne = async (n: Note, e?: { stopPropagation: () => void }) => {
     e?.stopPropagation();
-    const res = await exportNote(n.filename);
+    const res = await exportNoteDocx(n.filename);
     if (res.ok && res.path) {
-      alert(`已导出到：\n${res.path}`);
+      alert(`已导出 Word：\n${res.path}`);
     } else if (!res.cancelled && res.error) {
       alert("导出失败: " + res.error);
     }
@@ -102,12 +108,12 @@ export function NotesPanel() {
                   {new Date(n.mtime * 1000).toLocaleDateString()}
                 </span>
                 <div className="flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100">
-                  <Tooltip label="导出到本地">
+                  <Tooltip label="导出 Word（排版化文档）">
                     <IconButton
-                      aria-label="导出到本地"
+                      aria-label="导出 Word"
                       onClick={(e) => void exportOne(n, e)}
                     >
-                      <Download className="h-3.5 w-3.5" />
+                      <FileDown className="h-3.5 w-3.5" />
                     </IconButton>
                   </Tooltip>
                   <Tooltip label="编辑">
@@ -172,8 +178,8 @@ export function NotesPanel() {
                 onClick={() => void exportOne({ filename, title, mtime: 0, size: 0 })}
                 disabled={busy}
               >
-                <Download className="h-4 w-4" />
-                导出到本地
+                <FileDown className="h-4 w-4" />
+                导出 Word
               </Button>
               <Button
                 variant="ghost"

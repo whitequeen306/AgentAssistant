@@ -27,21 +27,16 @@ logger = logging.getLogger(__name__)
 DEFAULT_SETTINGS: dict[str, str] = {
     "theme": "system",            # light / dark / system
     "accent": "#007AFF",
-    "startup_state": "main",  # main / docked-search / popup-chat
+    "startup_state": "main",  # main / docked-search
     "minimize_behavior": "box",    # box / tray
     "edge_snap": "on",             # on / off
-    "voice_autosend": "off",       # PTT result: off=fill input, on=send directly
-    "ptt_hotkey": "ctrl+shift+space",
     # Feature toggles (§5.5 功能开关)
     "feature_right_click": "on",
-    "feature_briefing": "on",
-    "feature_perf_monitor": "on",
-    "feature_voice_ptt": "on",
-    "feature_research": "on",
-    "feature_tts": "on",
-    # Morning briefing time window (local HH:MM) — only fires inside it
-    "briefing_window_start": "06:30",
-    "briefing_window_end": "11:30",
+    # 学习画像（SystemPrompt「背景参考」注入；练习室自定义出题也读取）
+    "profile_major": "",
+    "profile_grade": "",
+    "profile_goal": "",
+    "profile_note": "",
     # Thinking intensity for DeepSeek (off disables the CoT stream)
     "reasoning_effort": "low",
 }
@@ -192,6 +187,30 @@ class UIStore:
             conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conv_id,))
             conn.execute("DELETE FROM conversations WHERE id = ?", (conv_id,))
             conn.commit()
+
+    def purge_retired_report_conversations(self) -> int:
+        """Delete conversations left by the removed briefing/perf features.
+
+        Idempotent startup cleanup: 「晨间播报」/「性能检测」专用会话随功能
+        一起移除，残留的旧记录（含消息）不再出现在会话列表里。
+        """
+        titles = ("晨间播报", "性能检测")
+        removed = 0
+        with self._lock:
+            conn = self._ensure_db()
+            placeholders = ",".join("?" * len(titles))
+            rows = conn.execute(
+                f"SELECT id FROM conversations WHERE title IN ({placeholders})",
+                titles,
+            ).fetchall()
+            for row in rows:
+                conn.execute(
+                    "DELETE FROM messages WHERE conversation_id = ?", (row["id"],)
+                )
+                conn.execute("DELETE FROM conversations WHERE id = ?", (row["id"],))
+                removed += 1
+            conn.commit()
+        return removed
 
     # ─── Messages ──────────────────────────────────────────────────
 

@@ -136,6 +136,11 @@ def public_llm_error(exc: BaseException) -> str:
 
     Never forwards provider JSON, URLs, or keys. Full detail stays in logs.
     """
+    # Config errors carry their own user-facing guidance (e.g. "去设置页填写
+    # API Key") — pass it through instead of collapsing it into "服务失败".
+    user_msg = getattr(exc, "user_message", None)
+    if user_msg:
+        return str(user_msg)
     status = getattr(exc, "status_code", None)
     low = str(exc).lower()
     if status == 402 or "insufficient balance" in low or "insufficient_quota" in low:
