@@ -1,0 +1,667 @@
+<!doctype html>
+<html lang="zh-CN" data-page-node-id="DDe93WE24sBmkdGRsK1s1N">
+<head data-page-node-id="hj3Xtkf1JfxbMfGHvO8nR9">
+<meta charset="UTF-8" data-page-node-id="OSQOKCHxMuf6fBlF0NEouq">
+<meta name="viewport" content="width=device-width, initial-scale=1.0" data-page-node-id="lLvOsdD17dp6M7CFOhYSTE">
+<title>词元新学 · 由 Token 驱动的大学生自主学习智能体平台</title>
+<link rel="icon" type="image/png" href="images/logo-mark.png">
+<meta name="description" content="词元新学是一个本地优先的大学生自主学习智能体平台：右键精读、深度调研、沉淀入学习库、自动出题判分、按遗忘曲线回炉，形成完整学习闭环。数据不出本机。" data-page-node-id="uCU5cj5FaL3Zq4gfJ5kL9X">
+<style>
+:root{
+  --paper:#F6EFE1;          /* 洞洞板米白 */
+  --paper-2:#FBF6EA;
+  --ink:#141414;            /* 描边黑 */
+  --blue:#2244CC;           /* 深蓝撞色 */
+  --orange:#FF6A00;         /* 橙撞色 */
+  --yellow:#FFD400;         /* 黄撞色 */
+  --brown:#8a5a2b;          /* 洞板棕 */
+  --peg:rgba(190,72,26,.36);/* 洞点 */
+  --white:#fff;
+  --radius:14px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{
+  font-family:"PingFang SC","Microsoft YaHei","Segoe UI",system-ui,-apple-system,sans-serif;
+  color:var(--ink); background:var(--paper); line-height:1.7;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+a{color:inherit;text-decoration:none}
+img{max-width:100%;display:block}
+b,strong{font-weight:700}
+
+/* ===== 洞洞板背景 ===== */
+.pegboard{
+  background-color:var(--paper);
+  background-image:
+    radial-gradient(circle 3.6px at 16px 15px, var(--peg) 97%, transparent 100%),
+    radial-gradient(circle 3.6px at 16px 15px, var(--peg) 97%, transparent 100%);
+  background-size:64px 54px;
+  background-position:0 0, 32px 27px;
+}
+.boardline{position:absolute;top:0;bottom:0;width:5px;background:rgba(122,74,33,.5);border-radius:3px}
+
+/* ===== 新粗野主义基础件 ===== */
+.nb{border:2.5px solid var(--ink);border-radius:var(--radius);box-shadow:6px 6px 0 var(--ink);background:#fff}
+.nb-btn{
+  display:inline-flex;align-items:center;gap:9px;padding:13px 26px;border-radius:12px;
+  font-size:15px;font-weight:700;border:2.5px solid var(--ink);cursor:pointer;
+  box-shadow:5px 5px 0 var(--ink);transition:transform .12s, box-shadow .12s;
+}
+.nb-btn:hover{transform:translate(-2px,-2px);box-shadow:7px 7px 0 var(--ink)}
+.nb-btn:active{transform:translate(3px,3px);box-shadow:1px 1px 0 var(--ink)}
+.nb-yellow{background:var(--yellow);color:var(--ink)}
+.nb-orange{background:var(--orange);color:#fff}
+.nb-blue{background:var(--blue);color:#fff}
+.nb-black{background:var(--ink);color:#fff}
+.nb-white{background:#fff;color:var(--ink)}
+
+/* ===== 动效：hover 放大 + 抖动 ===== */
+@keyframes wiggle{
+  0%,100%{transform:rotate(calc(var(--r,0deg) - 2.2deg)) scale(var(--s,1.08))}
+  50%{transform:rotate(calc(var(--r,0deg) + 2.2deg)) scale(var(--s,1.08))}
+}
+.blk,.sticker,.hero-note,.tag-card,.card,.step,.shots figure,.shots-3 figure,.appicon,.apptag{
+  transform:rotate(var(--r,0deg));
+  transition:transform .18s ease,box-shadow .18s ease;
+  will-change:transform;
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation:none!important;transition:none!important}
+}
+
+/* ===== 色块入场弹跳 ===== */
+@keyframes popin{
+  0%  {transform:rotate(-8deg) scale(0);opacity:0}
+  100%{transform:rotate(var(--r,0deg)) scale(1);opacity:1}
+}
+.hero .blk{animation:popin .55s cubic-bezier(.18,1.7,.4,1) backwards}
+.hero .blockline:nth-of-type(1) .blk{animation-delay:.12s}
+.hero .blockline:nth-of-type(2) .blk:nth-child(1){animation-delay:.3s}
+.hero .blockline:nth-of-type(2) .blk:nth-child(2){animation-delay:.44s}
+
+/* 贴纸 */
+.sticker{
+  display:inline-block;border:3px solid #fff;border-radius:12px;padding:8px 14px;
+  font-weight:800;box-shadow:4px 4px 10px rgba(0,0,0,.28);
+  --s:1.14;cursor:default;
+}
+.sticker:hover{z-index:6;animation:wiggle .38s ease-in-out infinite}
+
+/* 挂钩卡片 */
+.hook{position:relative;transform-origin:top center}
+.hook::before{
+  content:"";position:absolute;top:-17px;left:50%;transform:translateX(-50%);
+  width:10px;height:17px;border:3px solid var(--brown);border-bottom:none;border-radius:6px 6px 0 0;
+}
+
+/* ===== header ===== */
+header{position:sticky;top:0;z-index:50;background:#fff;border-bottom:2.5px solid var(--ink)}
+.nav{display:flex;align-items:center;justify-content:space-between;height:64px}
+.brand{display:flex;align-items:center;gap:11px;font-size:19px;font-weight:900;letter-spacing:-.3px}
+.logo{width:34px;height:34px;border-radius:10px;background:var(--ink);color:var(--yellow);display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:900;border:2.5px solid var(--ink);box-shadow:3px 3px 0 var(--orange)}
+.navlinks{display:flex;gap:26px;font-size:14px;font-weight:500}
+.navlinks a{position:relative;padding:6px 0}
+.navlinks a:hover{color:var(--orange)}
+.navlinks a.on{font-weight:700}
+.navlinks a.on::after{content:"";position:absolute;left:0;right:0;bottom:-2px;height:4px;background:var(--orange);border-radius:2px}
+@media(max-width:860px){.navlinks{display:none}}
+
+/* ===== hero ===== */
+.hero{position:relative;padding:64px 0 72px;overflow:hidden}
+.hero .boardline{left:8%}
+.hero .boardline.b2{left:50%}
+.hero .boardline.b3{left:92%}
+.hero-grid{position:relative;display:grid;grid-template-columns:1fr;justify-items:center;gap:0}
+
+/* 色块大标题 */
+.blockline{display:flex;flex-wrap:wrap;justify-content:center;gap:26px 56px;margin-top:22px}
+.blk{
+  display:inline-block;padding:6px 20px 10px;font-weight:900;letter-spacing:.5px;
+  font-size:clamp(30px,5.4vw,58px);line-height:1.25;border:3px solid var(--ink);
+  --s:1.05;
+}
+.blk:hover{z-index:5;animation:wiggle .38s ease-in-out infinite}
+.blk-blue{background:var(--blue);color:#fff;--r:-1deg}
+.blk-yellow{background:var(--yellow);color:var(--ink);--r:1deg}
+.blk-orange{background:var(--orange);color:var(--ink)}
+.blk-plain{color:var(--ink)}
+
+/* hero 周边贴纸 / 平板 / 卡片 */
+.hero-inner{position:relative;max-width:1080px;margin:0 auto}
+.stk-token{position:absolute;left:2%;top:2%;background:var(--ink);color:#fff;--r:-9deg;font-size:15px}
+.stk-five{position:absolute;right:3%;top:44%;background:var(--orange);color:#fff;--r:8deg;font-size:14px}
+.stk-logo{position:absolute;right:8%;bottom:2%;width:78px;height:78px;padding:6px;background:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;overflow:hidden;--r:10deg}
+.stk-logo img{width:100%;height:100%;object-fit:contain}
+.hero-note{
+  position:absolute;left:3%;top:40%;width:230px;padding:16px 18px;--r:-2deg;--s:1.04;font-size:13.5px;
+}
+.hero-note:hover{z-index:6;animation:wiggle .45s ease-in-out infinite}
+.hero-note h3{font-size:15px;font-weight:800;margin-bottom:6px}
+.hero-note p{color:#444;line-height:1.65}
+.hero-cta-row{display:flex;justify-content:center;margin-top:44px;position:relative;z-index:2}
+.dl-app{
+  display:flex;flex-direction:column;align-items:center;gap:0;position:relative;
+}
+.dl-app .appicon{
+  width:74px;height:74px;border-radius:20px;background:var(--ink);color:#fff;display:flex;align-items:center;justify-content:center;
+  font-size:32px;border:3px solid #fff;box-shadow:5px 6px 12px rgba(0,0,0,.35);
+}
+.dl-app:hover .appicon{--s:1.12;animation:wiggle .4s ease-in-out infinite}
+.dl-app:hover .apptag{--s:1.1;animation:wiggle .4s ease-in-out infinite .05s}
+.dl-app .apptag{
+  margin-top:8px;background:var(--yellow);border:2.5px solid var(--ink);border-radius:8px;
+  padding:3px 10px;font-size:12.5px;font-weight:800;--r:-3deg;
+}
+
+/* hero 底部黄色条 */
+.mailbar{
+  margin:56px auto 0;max-width:860px;display:flex;align-items:stretch;gap:0;position:relative;
+}
+.mailbar .mb-label{
+  position:absolute;top:-34px;left:0;background:var(--blue);color:#fff;font-size:13px;font-weight:700;
+  padding:4px 12px;border-radius:6px 6px 0 0;
+}
+.mailbar .mb-input{
+  flex:1;background:var(--yellow);border:3px solid var(--ink);border-right:none;
+  border-radius:12px 0 0 12px;padding:15px 20px;font-weight:700;font-size:15.5px;display:flex;align-items:center;
+}
+.mailbar .mb-input small{font-weight:500;color:#5a4a00;margin-left:10px;font-size:12.5px}
+.mailbar .mb-btn{
+  background:var(--orange);color:#fff;border:3px solid var(--ink);border-radius:0 12px 12px 0;
+  padding:0 34px;font-size:16px;font-weight:800;display:flex;align-items:center;cursor:pointer;
+  transition:filter .12s;
+}
+.mailbar .mb-btn:hover{filter:brightness(1.08)}
+.mb-note{font-size:12.5px;color:#6b5b33;margin-top:8px;max-width:860px;margin-left:auto;margin-right:auto}
+
+/* 吊牌数据徽章 */
+.tags{display:grid;grid-template-columns:repeat(4,1fr);gap:26px;margin-top:58px;position:relative;z-index:2}
+.tag-card{padding:20px 12px 16px;text-align:center;position:relative;--s:1.05}
+.tag-card:hover{z-index:5;animation:wiggle .45s ease-in-out infinite}
+.tag-card .num{display:inline-block;font-size:26px;font-weight:900;padding:2px 12px;margin-bottom:8px;border:2.5px solid var(--ink)}
+.tag-card .num.n1{background:var(--blue);color:#fff}
+.tag-card .num.n2{background:var(--orange);color:#fff}
+.tag-card .num.n3{background:var(--yellow);color:var(--ink)}
+.tag-card .num.n4{background:var(--ink);color:var(--yellow)}
+.tag-card span{display:block;font-size:13.5px;font-weight:600;color:#333}
+@media(max-width:860px){
+  .tags{grid-template-columns:repeat(2,1fr);gap:18px}
+  .stk-five,.stk-logo{display:none}
+  .hero-note{position:static;width:auto;max-width:420px;margin:26px auto 0;--r:0deg}
+  .stk-token{position:static;--r:-4deg;margin-bottom:18px}
+  .mailbar{flex-direction:column}
+  .mailbar .mb-input{border-right:3px solid var(--ink);border-radius:12px 12px 0 0}
+  .mailbar .mb-btn{border-radius:0 0 12px 12px;padding:14px 0;justify-content:center}
+}
+
+/* ===== 通用 section ===== */
+section{padding:76px 0}
+.sec-white{background:#fff;border-top:2.5px solid var(--ink);border-bottom:2.5px solid var(--ink)}
+.sec-blue{background:var(--blue);color:#fff}
+.eyebrow{
+  display:inline-block;font-size:13px;font-weight:800;letter-spacing:2px;padding:4px 12px;
+  border:2.5px solid var(--ink);border-radius:8px;margin-bottom:16px;box-shadow:3px 3px 0 var(--ink);
+}
+.eyebrow.e-blue{background:var(--blue);color:#fff}
+.eyebrow.e-orange{background:var(--orange);color:#fff}
+.eyebrow.e-yellow{background:var(--yellow);color:var(--ink)}
+.eyebrow.e-black{background:var(--ink);color:var(--yellow)}
+h2{font-size:clamp(26px,3.6vw,38px);font-weight:900;letter-spacing:-.5px;line-height:1.3}
+.hl{background:linear-gradient(transparent 58%, var(--yellow) 58%);padding:0 2px}
+.sec-blue .hl{background:linear-gradient(transparent 58%, var(--orange) 58%)}
+.lead{margin-top:16px;font-size:16px;max-width:780px;color:#3a3a3a}
+.sec-blue .lead{color:#dfe6ff}
+
+/* 痛点卡 */
+.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:26px;margin-top:44px}
+.card{padding:24px 22px;position:relative;--s:1.02}
+.card:hover{transform:rotate(var(--r,0deg)) translateY(-5px) scale(1.02);box-shadow:9px 11px 0 var(--ink);z-index:5}
+.card .k{
+  display:inline-block;font-size:12.5px;font-weight:800;color:#fff;background:var(--ink);
+  padding:3px 11px;border-radius:7px;border:2px solid var(--ink);margin-bottom:14px;
+}
+.card.c1 .k{background:var(--blue)}
+.card.c2 .k{background:var(--orange)}
+.card.c3 .k{background:var(--brown)}
+.card h3{font-size:17px;font-weight:800;margin-bottom:8px}
+.card p{font-size:14px;color:#444}
+@media(max-width:860px){.cards{grid-template-columns:1fr}}
+
+/* 闭环步骤链 */
+.loop{display:flex;flex-wrap:wrap;gap:12px;margin-top:36px;align-items:center}
+.step{
+  border:2.5px solid var(--ink);border-radius:12px;padding:10px 18px;font-size:15px;font-weight:800;
+  box-shadow:4px 4px 0 var(--ink);background:#fff;color:var(--ink);
+  --s:1.08;
+}
+.sec-blue .step{box-shadow:4px 4px 0 rgba(0,0,0,.55)}
+.step:hover{z-index:5;animation:wiggle .38s ease-in-out infinite}
+.step:nth-child(4n+1){background:var(--yellow);--r:-1.2deg}
+.step:nth-child(4n+3){background:var(--orange);color:#fff;--r:1.2deg}
+.arrow{color:currentColor;font-size:20px;font-weight:900;opacity:.85}
+
+/* 截图卡 */
+.shots{display:grid;grid-template-columns:repeat(2,1fr);gap:30px;margin-top:40px}
+.shots figure{padding:14px;position:relative;--s:1.03}
+.shots figure:nth-child(odd){--r:-.7deg}
+.shots figure:nth-child(even){--r:.7deg}
+.shots figure:hover,.shots-3 figure:hover{z-index:5;animation:wiggle .5s ease-in-out infinite}
+.shots img{border:2px solid var(--ink);border-radius:8px}
+.shots figcaption{font-size:13.5px;color:#333;margin-top:11px;line-height:1.65}
+.shots figcaption b{font-weight:800}
+.shots .fc-tag{display:inline-block;background:var(--yellow);border:2px solid var(--ink);border-radius:6px;padding:1px 8px;font-size:12px;font-weight:800;margin-right:8px}
+@media(max-width:860px){.shots{grid-template-columns:1fr}.shots figure{--r:0deg}}
+
+.shots-3{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:24px;margin-top:40px;max-width:820px;margin-left:auto;margin-right:auto}
+.shots-3 figure{padding:13px;--s:1.03}
+.shots-3 img{border:2px solid var(--ink);border-radius:8px}
+.shots-3 figcaption{font-size:13px;color:#333;margin-top:10px;line-height:1.6}
+.shots-3 figcaption b{font-weight:800}
+@media(max-width:860px){.shots-3{grid-template-columns:1fr}}
+
+/* 对比表 */
+.tbl-scroll{overflow-x:auto;margin-top:38px;border:3px solid var(--ink);border-radius:14px;box-shadow:7px 7px 0 var(--ink);background:#fff}
+.tbl{width:100%;border-collapse:collapse;font-size:14px;min-width:720px}
+.tbl th,.tbl td{border-bottom:1.5px solid rgba(20,20,20,.18);padding:12px 15px;text-align:left}
+.tbl tr:last-child td{border-bottom:none}
+.tbl th{background:var(--ink);color:#fff;font-weight:800;font-size:13.5px;white-space:nowrap}
+.tbl th.us{background:var(--orange)}
+.tbl td.us{background:var(--yellow);font-weight:800}
+.tbl td:first-child{font-weight:700}
+
+/* 用户画像 */
+.sec-cream{background:var(--paper-2);border-top:2.5px solid var(--ink);border-bottom:2.5px solid var(--ink)}
+.who-cards{display:grid;grid-template-columns:repeat(2,1fr);gap:26px;margin-top:44px}
+.who-card{padding:24px 24px 20px}
+.who-card .badge{
+  display:inline-block;font-size:12.5px;font-weight:800;color:#fff;background:var(--ink);
+  padding:3px 11px;border-radius:7px;border:2px solid var(--ink);margin-bottom:12px;
+}
+.who-card.w1 .badge{background:var(--blue)}
+.who-card.w2 .badge{background:var(--orange)}
+.who-card.w3 .badge{background:var(--brown)}
+.who-card.w4 .badge{background:var(--blue)}
+.who-card:hover{--s:1.02;animation:wiggle .45s ease-in-out infinite;z-index:5}
+.who-card h3{
+  display:inline-block;font-size:17px;font-weight:900;margin-bottom:10px;background:var(--yellow);
+  border:2px solid var(--ink);border-radius:8px;padding:2px 10px;transform:rotate(-1deg);
+}
+.who-card p{font-size:14px;color:#3d3d3d}
+.who-card p em{font-style:normal;background:linear-gradient(transparent 58%, var(--yellow) 58%)}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.chip{
+  font-size:12.5px;font-weight:700;border:2px solid var(--ink);border-radius:7px;
+  padding:2px 10px;background:#fff;
+}
+.chip.on{background:var(--yellow)}
+.notfit{
+  max-width:860px;margin:36px auto 0;padding:18px 24px;background:#fff;font-size:14.5px;
+  border:2.5px dashed var(--ink);border-radius:14px;box-shadow:5px 5px 0 var(--ink);
+}
+.notfit b{
+  display:inline-block;background:var(--orange);color:#fff;border-radius:6px;
+  padding:1px 9px;margin-right:9px;font-weight:800;
+}
+.notfit p{color:#333;display:inline}
+@media(max-width:860px){.who-cards{grid-template-columns:1fr}}
+
+/* 轨道小卡 */
+.mini-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;margin-top:30px}
+.mini-cards .card h3{display:inline-block;background:var(--yellow);border:2px solid var(--ink);border-radius:8px;padding:2px 10px;margin-bottom:10px;transform:rotate(-1deg)}
+@media(max-width:860px){.mini-cards{grid-template-columns:1fr}}
+
+/* ===== 下载区 ===== */
+.dl-box{max-width:760px;margin:44px auto 0;padding:40px 34px;text-align:center;position:relative}
+.dl-box .corner-stk{position:absolute;right:-14px;top:-18px;background:var(--blue);color:#fff;--r:9deg;font-size:13px}
+.dl-box h3{font-size:24px;font-weight:900}
+.dl-box .meta{font-size:14.5px;color:#444;margin-top:10px}
+.req{display:grid;grid-template-columns:repeat(2,1fr);gap:26px;margin-top:44px;text-align:left;max-width:900px;margin-left:auto;margin-right:auto}
+.req .rq{padding:20px 22px}
+.req h4{font-size:15px;font-weight:900;margin-bottom:10px;display:inline-block;background:var(--orange);color:#fff;border:2px solid var(--ink);border-radius:7px;padding:2px 10px}
+.req ul{list-style:none;font-size:14px;color:#333}
+.req li{padding-left:20px;position:relative;margin-bottom:7px}
+.req li:before{content:"";position:absolute;left:2px;top:9px;width:7px;height:7px;border-radius:50%;background:var(--orange);border:1.5px solid var(--ink)}
+@media(max-width:720px){.req{grid-template-columns:1fr}}
+.pending{
+  display:inline-block;margin-top:20px;padding:9px 18px;border:2.5px dashed var(--ink);border-radius:10px;
+  font-size:13.5px;color:#5a4a00;background:var(--yellow);font-weight:600;
+}
+
+/* ===== footer ===== */
+footer{background:var(--ink);color:#e8e2d5;border-top:8px solid var(--yellow);padding:46px 0}
+.fgrid{display:flex;justify-content:space-between;gap:28px;flex-wrap:wrap;font-size:14px}
+footer b{color:var(--yellow);font-weight:800}
+footer .fbrand{display:flex;align-items:center;gap:10px;font-size:17px;font-weight:900;color:#fff}
+footer .fbrand .logo{background:var(--yellow);color:var(--ink);box-shadow:3px 3px 0 var(--orange)}
+</style>
+</head>
+<body data-page-node-id="s5xDmofxEs5XGK4ruxnLMg">
+
+<header data-page-node-id="ffataSl3z43EdK1tWZ5nEt">
+  <div class="wrap nav" data-page-node-id="R4ndqgW9n2L2NFkzYZ1NVf">
+    <div class="brand" data-page-node-id="UXt1z1XVHA6jOGHw4x3YFA"><img src="images/logo-mark.png" alt="" style="height:30px;display:block">词元新学</div>
+    <nav class="navlinks" data-page-node-id="3GMPH8opIb8ljiWSwRV1o4">
+      <a href="#why" class="on" data-page-node-id="VosoDs5QC4KHl8kWh0nDM0">为什么</a>
+      <a href="#who" data-page-node-id="whoNav">适合谁</a>
+      <a href="#loop" data-page-node-id="DKBqsPtVeOxjhY7HzfSsNo">学习闭环</a>
+      <a href="#diff" data-page-node-id="xrwteeR06NtEHeERfq6ou0">不同之处</a>
+      <a href="#tracks" data-page-node-id="PV70zN3FSAM9A8xFF7THiz">目标轨道</a>
+      <a href="#download" data-page-node-id="meWnNepo9spaUM6F2pk81Y">下载</a>
+    </nav>
+    <a class="nb-btn nb-yellow" href="#download" style="padding:9px 20px;font-size:14px" data-page-node-id="FxwdRuACW3VcYAByXA7dgS">下载客户端</a>
+  </div>
+</header>
+
+<!-- ================= HERO：洞洞板 ================= -->
+<div class="hero pegboard" data-page-node-id="JmruWZFzj3ZiOLPDEAsPda">
+  <div class="boardline" data-page-node-id="9rQ9zE5AXlSY02N98BXVW3"></div><div class="boardline b2" data-page-node-id="U2WaiBWSUZTOrxeion62k2"></div><div class="boardline b3" data-page-node-id="pNgrqLFj7SfzrJpb4S1UR3"></div>
+  <div class="hero-inner" data-page-node-id="Sb8wL3nnLQAJrBfxJcqwyJ">
+    <span class="sticker stk-token" data-page-node-id="1sgTK6KKLLRyUlUAUInwHa">Token 驱动</span>
+
+    <div class="hero-grid wrap" data-page-node-id="l1gNVQ5ALAmWwhaKJeI3lG">
+      <div class="blockline" data-page-node-id="MBYwwVF8pT94pmXMiEFQsN"><span class="blk blk-blue" data-page-node-id="78DmT2GgJ4NCZJLpNTSMIc">把「读过」，</span></div>
+      <div class="blockline" data-page-node-id="hXPs2oPPegCpH0U3f6fPkq">
+        <span class="blk blk-yellow" data-page-node-id="jEjVEmHLaWhEL8sk56fOeq">走成</span><span class="blk blk-orange" data-page-node-id="sv5AHFLNiAsOehEDPsTojX">真的学会。</span>
+      </div>
+    </div>
+
+    <span class="sticker stk-five" data-page-node-id="kOWWNzP7tRuWs5YeBDZBwb">Leitner 五盒</span>
+    <span class="sticker stk-logo" data-page-node-id="yPhmbwXCRxSGiGW0BVfm9h"><img src="images/logo-mark.png" alt="词元新学"></span>
+
+    <div class="hero-note hook nb" data-page-node-id="pyZGa8UH6gSg7Cd7C8CuMu">
+      <h3 data-page-node-id="7vSscQ4KxV5FlGHMciXIlz">从一份 PDF，到一场考试。</h3>
+      <p data-page-node-id="DL83cnZJgHo1QzcFpq8Y1m">AI 负责跑腿：读、搜、存、出题、判分。人负责掌握：按遗忘曲线回炉，学过的不再还给老师。</p>
+    </div>
+
+    <div class="hero-cta-row" data-page-node-id="YP35MlqEP1266C57B6MG8Y">
+      <a class="dl-app" href="#download" data-page-node-id="oBIbkuaFeynhLoXKLiyPgy">
+        <span class="appicon" data-page-node-id="oaChlLIc0ur5BefHOLeDnU">&#8595;</span>
+        <span class="apptag" data-page-node-id="YEPLFarpvfEqRJuAFh77hK">下载软件</span>
+      </a>
+    </div>
+
+    <div class="mailbar" data-page-node-id="wgckc9aHvDXkkLUlSrzFFJ">
+      <span class="mb-label" data-page-node-id="pnWi368qkCuqPYCEP0W7id">不用安装，单个 exe</span>
+      <div class="mb-input" data-page-node-id="9xQmmTT02D4qxvdRHactO7">Windows 10/11 · x64 · 74 MB<small data-page-node-id="5CeKYqhpOnlL0N6rfO9PaO">双击即用，数据留在本机</small></div>
+      <a class="mb-btn" href="#download" data-page-node-id="7uirO7DDN8xtZZHvyXFuBN">收进下载</a>
+    </div>
+    <p class="mb-note" style="text-align:center" data-page-node-id="eeFB3GXcoiO5LN8ty0GEWD">点击橙色按钮先看下载区，或直接点左侧黑色图标。</p>
+
+    <div class="tags" data-page-node-id="UiAbvE8cm2Q6GNC7QBkIEj">
+      <div class="tag-card hook nb" data-page-node-id="K3YKsHclQVNkouRCO1Dkzj"><span class="num n1" data-page-node-id="EU3lWXXmEXGoUOa42YIByl">6 环节</span><span data-page-node-id="qODvA1NqpzKOdcVwM8uYWH">完整学习闭环</span></div>
+      <div class="tag-card hook nb" data-page-node-id="vwKEEuBJ60r3BGzX2AY7dm"><span class="num n2" data-page-node-id="ZJ4ezKydnJ7GkrKH1GY9wG">190 秒</span><span data-page-node-id="vovfXTrLqEYOEHaRcJZxsj">四校对比调研实测</span></div>
+      <div class="tag-card hook nb" data-page-node-id="tB9YbS6k2NamLGXYloWfrt"><span class="num n3" data-page-node-id="wWNXkyNaLb2udBRcHjjRX9">38 项</span><span data-page-node-id="ihoa1uzn0NzF33AazqLxT7">智能体可用工具</span></div>
+      <div class="tag-card hook nb" data-page-node-id="YRfAj3AS9NG13fzZJbxtaX"><span class="num n4" data-page-node-id="cAltphp16vlOKvOPoGkuBs">0 上传</span><span data-page-node-id="iEP3CxUdPA9cm2QQcRko5x">学习数据不出本机</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 为什么 ================= -->
+<section id="why" class="sec-white" data-page-node-id="f1OwfcrCHq230qIYLBBHCA">
+  <div class="wrap" data-page-node-id="aIBJkMDhUSNEOEYTpF1sHh">
+    <span class="eyebrow e-blue" data-page-node-id="cCfw3j0rlGMIga8z4HSC0r">问题</span>
+    <h2 data-page-node-id="zZ6jptaZpdXc0KxvWBWBGi">「读过了」和「会做了」之间，<span class="hl" data-page-node-id="ahL0aSpVFpqKi4JYYFkqxO">没人负责</span></h2>
+    <p class="lead" data-page-node-id="CtwV3uxQ2Le9WZiGJZAYDt">
+      全国约 4700 万在校生几乎人人都在用 AI 辅助学习，但用法停留在"搜一搜、问一问、抄一抄"。
+      认知科学的基本事实没变：不测试就会遗忘——20 分钟后遗忘 42%。
+      通用 AI 助手对话即终点，无沉淀、无检验、无复习，于是用得越方便，"虚假掌握"越普遍。
+    </p>
+    <div class="cards" data-page-node-id="WE1yg44Lv0DrsooJFBfTCf">
+      <div class="card c1 hook nb" data-page-node-id="LD6qWnNySltIwSPCv5Lu12">
+        <span class="k" data-page-node-id="qGeRRXOwuEGcZ4Q5WooZ8U">断层一</span>
+        <h3 data-page-node-id="JSmP2wEmEO07upRDNZwVR2">资料在库，掌握不在脑</h3>
+        <p data-page-node-id="XIrotQRJYqRFcAhK9P4MQl">聊天记录无法沉淀为结构化知识资产，换一个会话就失忆，学过的东西零散在各处。</p>
+      </div>
+      <div class="card c2 hook nb" data-page-node-id="BHj1i9BULAZfkBX6wmfkof">
+        <span class="k" data-page-node-id="jMr1DnruSLYlR5u8JxXKF5">断层二</span>
+        <h3 data-page-node-id="dtuYAmAo1tXccTQSq3m2ND">没有机制对抗遗忘</h3>
+        <p data-page-node-id="rDfd9UfRCnMmBFE5LM5WcR">间隔重复是被验证有效的方法，但制卡成本极高，多数学生坚持不下来——工具不负责"坚持"。</p>
+      </div>
+      <div class="card c3 hook nb" data-page-node-id="lSDRkXOoOgGyLM42uvSHym">
+        <span class="k" data-page-node-id="U5Re3JQqP2JwpQAuOyHYaV">断层三</span>
+        <h3 data-page-node-id="BiNrU099xNsoWwTvuzXu0r">信息搜集靠人力硬扛</h3>
+        <p data-page-node-id="tdu6LWmDIpi4A8COmK8UsA">一次择校调研可能要写几十个抓取脚本、处理异步目录与乱码 PDF——这不该每个学生重复支付。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 适合谁 ================= -->
+<section id="who" class="sec-cream">
+  <div class="wrap">
+    <span class="eyebrow e-blue">对号入座</span>
+    <h2>这个软件，<span class="hl">适合什么样的你？</span></h2>
+    <p class="lead">
+      它不为"所有人"而做。如果你在下面四条里看到自己，那这套闭环大概率正是你缺的那一半。
+    </p>
+
+    <div class="who-cards">
+      <div class="who-card w1 hook nb card">
+        <span class="badge">轨道一 · 择校备考</span>
+        <h3>查了三天还没定学校的人</h3>
+        <p>几十所院校、几百条分数线、推免占比与科目代码差异，翻贴吧翻到凌晨还是不敢拍板。
+          <em>四校对比报告 3 分钟出结果</em>，每个数字都带来源可点开核验，关键节点自动生成倒计时。</p>
+        <div class="chips"><span class="chip on">四校对比</span><span class="chip">来源可核验</span><span class="chip">节点提醒</span></div>
+      </div>
+
+      <div class="who-card w2 hook nb card">
+        <span class="badge">轨道二 · 资料消化</span>
+        <h3>网盘里存了几百份资料的人</h3>
+        <p>论文、课件、真题——收藏了就等于学过，其实再没打开过。
+          <em>右键一份 PDF 交给助手</em>：精读 → 沉淀成结构化笔记 → 就这份材料出题考你。</p>
+        <div class="chips"><span class="chip on">右键精读</span><span class="chip">结构化笔记</span><span class="chip">自动出题</span></div>
+      </div>
+
+      <div class="who-card w3 hook nb card">
+        <span class="badge">轨道三 · 数据主权</span>
+        <h3>不想把论文交给云端的人</h3>
+        <p>未发表的想法、实验数据、个人笔记，不想成为别人的训练语料。
+          <em>资料、知识库、对话全存本机</em>，唯一的外部依赖是可替换的模型 API。</p>
+        <div class="chips"><span class="chip on">本地优先</span><span class="chip">安全围栏</span><span class="chip">可换模型</span></div>
+      </div>
+
+      <div class="who-card w4 hook nb card">
+        <span class="badge">轨道四 · 多线并推</span>
+        <h3>考研求职同时准备的人</h3>
+        <p>目标会变，工具不该每次重买。<em>轨道只是一份配置文件</em>（场景提示 + 输出字段 + 时间节点），
+          换目标零代码切换，同一份资料服务不同轨道。</p>
+        <div class="chips"><span class="chip on">目标轨道</span><span class="chip">零代码扩展</span><span class="chip">一份资料多用</span></div>
+      </div>
+    </div>
+
+    <div class="notfit">
+      <b>也说清不适合谁</b>
+      <p>只想让 AI 直接给答案、不想被出题拷问的人；期待装上就能用、不愿配一次模型 API Key 的人；
+        以及希望手机端立刻上手的人（当前是 Windows 桌面版，移动端在规划中）。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 学习闭环 ================= -->
+<section id="loop" class="sec-blue" data-page-node-id="w0Gqs5tcCvNTUvphQ4bwnG">
+  <div class="wrap" data-page-node-id="prMGTL7is8Jgi9Ha78JbbZ">
+    <span class="eyebrow e-yellow" data-page-node-id="ssEbG07LhdsjUVPX0sj1HX">产品</span>
+    <h2 data-page-node-id="FrBgU5qRViMcKAtYaiCCC3">一条闭环，<span class="hl" data-page-node-id="d80CjPBsExytS2qBDfkAje">六个环节</span></h2>
+    <p class="lead" data-page-node-id="kmN4s9ieHwkPeQtYYVHgC7">
+      每个环节都是 AI 自主执行的任务流，Token 是它的燃料与计量单位——
+      哪一步花多少预算、何时收尾交付，全部透明可审计。
+    </p>
+    <div class="loop" data-page-node-id="8H8GkvnFSgN01L23A48xLO">
+      <span class="step" data-page-node-id="BENV4oC286iq81hUBboGyh">① 文档精读</span><span class="arrow" data-page-node-id="8fGPTFUuEiSdHtlYgr4eZg">&#8594;</span>
+      <span class="step" data-page-node-id="3dtC5hyf96v00VjHdlJnHA">② 深度调研</span><span class="arrow" data-page-node-id="luyPfR6FczRvwMfVQpzggG">&#8594;</span>
+      <span class="step" data-page-node-id="u7K4317dSpGsnhAeUEKFoR">③ 资料沉淀</span><span class="arrow" data-page-node-id="foU19CqGZRqoBBCeJZYm8D">&#8594;</span>
+      <span class="step" data-page-node-id="rGmbUfiveZSO7h4HOtuwQp">④ 练习出题</span><span class="arrow" data-page-node-id="EdNlQiMcnDMBGtKlOtiie5">&#8594;</span>
+      <span class="step" data-page-node-id="jioGPucOIUPZHMbsCGQF4w">⑤ 智能判分</span><span class="arrow" data-page-node-id="AW5VPINBEyA15Jhe3YyelS">&#8594;</span>
+      <span class="step" data-page-node-id="Mqm8y1N4FSok5WOm6Er1Lm">⑥ 间隔复习</span><span class="arrow" data-page-node-id="zhgnzP9tnbTHgVsC81shWy">&#8635;</span>
+    </div>
+
+    <div class="shots" data-page-node-id="jsmlvDwAM8ZhSjPaIoGff0">
+      <figure class="hook nb" data-page-node-id="fDelH98pujVFAqYPvzCs4a">
+        <img src="images/ui-context-menu.png" alt="在文件上右键，选择交给助手处理" data-page-node-id="mpqcRMCQTIHLH9s2j5ax4S">
+        <figcaption data-page-node-id="W759RIkuOy1GYzHsylSCoA"><span class="fc-tag" data-page-node-id="bTrMwEHrSLVTxfeKBgEYby">右键即开始</span>任意文件右键「Learn with Assistant」，无需先打开应用。</figcaption>
+      </figure>
+      <figure class="hook nb" data-page-node-id="Wmp1WU3R6YQcLaFvokci77">
+        <img src="images/ui-reading-followup.png" alt="精读完成后 AI 给出的四个去向" data-page-node-id="jv1cFHweFUpBNlmO0FYJ2w">
+        <figcaption data-page-node-id="iasS1vGEeNAbOfajMhc6RL"><span class="fc-tag" data-page-node-id="MWHI6u8XDHlAG8QDFRYc3C">精读不是终点</span>AI 给出四个去向：深入讲解、对比调研、整理笔记、自测出题——闭环由此咬合。</figcaption>
+      </figure>
+      <figure class="hook nb" data-page-node-id="Iqu6EC3Fwq35hQ9mojbeEM">
+        <img src="images/ui-notes.png" alt="资料库中的结构化笔记卡片" data-page-node-id="BbYbQWtoUllKi280MVI673">
+        <figcaption data-page-node-id="YdGWQxtEntKfrKfUlRzWBO"><span class="fc-tag" data-page-node-id="pEBOBokUQSx1v73VC8GsDo">沉淀成资产</span>笔记带标题、标签与结构化正文，可重问、可编辑、可一键导出 Word。</figcaption>
+      </figure>
+      <figure class="hook nb" data-page-node-id="U5Fg88OTCkWrcPkN24D5mU">
+        <img src="images/ui-practice.png" alt="练习室：基于自有材料出题与五盒掌握度" data-page-node-id="qz3bGCXn2UAgrNA7CE5kwm">
+        <figcaption data-page-node-id="0H8aim5t1AnHbokPGn2nAO"><span class="fc-tag" data-page-node-id="5PurbLsiAS3zFv1TxO9Vhw">出题 · 判分 · 回炉</span>客观题自动判分、主观题 AI 评阅给改进建议；五盒掌握度、连续打卡与正确率一目了然，成果还能导出 Word 带走。</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 不同之处 ================= -->
+<section id="diff" class="sec-white" data-page-node-id="12uLeC3mGm9VA5N6zP8c6L">
+  <div class="wrap" data-page-node-id="wWQMkqdq3s9ZA4T1Qmg4jE">
+    <span class="eyebrow e-orange" data-page-node-id="1XibPXbuHyOd7U1tW9VXgz">差异</span>
+    <h2 data-page-node-id="nLPBqvCnt6FTxSJDAJjBZq">不是又一个 <span class="hl" data-page-node-id="PN1irYUHEWYqBseqA2yrsY">AI 问答助手</span></h2>
+    <p class="lead" data-page-node-id="fAvBucTnp655onC9U40bXA">
+      通用助手向上够不到"学习管理"，记忆工具向下做不了"智能执行"。
+      词元新学占据两者围出的空档，并把"数据主权"还给学生。
+    </p>
+    <div class="tbl-scroll" data-page-node-id="nxeRXNSj9ofXnfGiAhQ7CQ">
+      <table class="tbl" data-page-node-id="rjGoFE5kmP9fe9lenaG7kI">
+        <tr data-page-node-id="I3YuWhN28dYAZV8f9DZRBu">
+          <th data-page-node-id="v104zmphW9jicYv95jdZpZ">能力</th><th data-page-node-id="CApJXOeJih6lO0oVkEXUFK">通用 AI 助手</th><th data-page-node-id="l6VAXHlXEUHhrBspxmY4W7">AI 搜索</th><th data-page-node-id="QHLWPTHX2xDCUZ1vNoWAkA">记忆工具</th><th class="us" data-page-node-id="YFhuf9fc2T6aR7yNrnK1jF">词元新学</th>
+        </tr>
+        <tr data-page-node-id="WHCWwafyFele2Uwj9mNhbZ"><td data-page-node-id="nXo3mu5sIbKnHriRmzb5wB">基于自有材料自动出题与判分</td><td data-page-node-id="UgUC1Yv2lcrxnoahXRqyYk">无</td><td data-page-node-id="e3GgeAcMiuNPJawDqlulFm">无</td><td data-page-node-id="RxxIGazTHckqAe78lszruY">手动制卡</td><td class="us" data-page-node-id="FlnFiF88q1gqPN1JJ5b7R9">自动出题 + AI 批改</td></tr>
+        <tr data-page-node-id="xTp0WCA5Tj0DK1rOhUCgMh"><td data-page-node-id="2GAs6Lk7b01O0zaAKyaqxT">间隔复习调度</td><td data-page-node-id="9ICys0tNoCHGaIvgS7GYTI">无</td><td data-page-node-id="JeuIQdpBhpVmtVj77yEaNY">无</td><td data-page-node-id="7YhElONc7qk8JxZaDB7S09">需手动维护</td><td class="us" data-page-node-id="MqtUhoRO2MhnfEa5EtW9yW">Leitner 五盒自动化</td></tr>
+        <tr data-page-node-id="cvt2igWnkG2I3DymeC4NJz"><td data-page-node-id="ozffPvQSDpKSgcEIc5WjAY">深度调研与来源溯源</td><td data-page-node-id="HqgExSB8gl6CQEuN0pA4H4">部分</td><td data-page-node-id="hFYKQcEmLeGULiZADpv7tt">强</td><td data-page-node-id="9hQl6iCY5iCxT767rEf4qF">无</td><td class="us" data-page-node-id="NWwnhCAnXsDxUSNMAoRfwj">多源交叉核验 + 分级标注</td></tr>
+        <tr data-page-node-id="WJ3GFx67yaqMa9Jvrms2kg"><td data-page-node-id="6WpVpiPZcahdP0cRc31Yon">结构化解析（异步目录 / 乱码 PDF）</td><td data-page-node-id="XU1NPABvPXozBdmHBQiigi">无</td><td data-page-node-id="eJ8r4IPvceAk4PunmCvz1n">无</td><td data-page-node-id="HEfU3R9M9G2N8riddKzPU5">无</td><td class="us" data-page-node-id="tTfB6P1oLXq5hIILF9nWEh">三级降级解析管线</td></tr>
+        <tr data-page-node-id="ChavxvV0tPF8YPIBm9dqpy"><td data-page-node-id="qeH27y45UxqGAbbJV0Xysz">数据保存在本机</td><td data-page-node-id="AjsX74E8Sv0vlh2y0qBFmA">云端</td><td data-page-node-id="34pRn2tf3qH61DUDVnRC6Q">云端</td><td data-page-node-id="MkDuWmX8pAYTBD1IOarGR1">本地但无智能</td><td class="us" data-page-node-id="M0PG2FKo88PXnaKwCLMmFZ">本地优先 + 安全围栏</td></tr>
+        <tr data-page-node-id="gii0S1Y3eAikDyHnjvY88W"><td data-page-node-id="iYmElb4zT6xOln1uSqARcz">用户画像个性化</td><td data-page-node-id="Q5Eh1NKVnoBJzqEMDIGHnd">轻度</td><td data-page-node-id="Fw0gn0Oic1v4l9RhqeXRdB">无</td><td data-page-node-id="HyiDcOKkOvFBiuJLlKJDxA">无</td><td class="us" data-page-node-id="IRcXGsnvA9MjDRatALAa6i">年级 / 专业 / 目标 / 轨道</td></tr>
+      </table>
+    </div>
+
+    <div class="cards" data-page-node-id="4AGo2EoI6OnwYPIUHGjK54">
+      <div class="card c1 hook nb" data-page-node-id="SAaNn4gEQRFp8Fj9c5uOeX">
+        <h3 data-page-node-id="ahoA7vbbFDD4Rd1kpVcy7H">本地优先</h3>
+        <p data-page-node-id="EyMNWsSuf1T5rRdCjDzVt4">学习资料、知识库与对话全部存本机（SQLite + 本地向量库），唯一的外部依赖是可替换的模型 API。</p>
+      </div>
+      <div class="card c2 hook nb" data-page-node-id="yqUqZC56QI63ktSitImLZ2">
+        <h3 data-page-node-id="WwlrwVBFSR7WvWDyTAQMu8">显式失败</h3>
+        <p data-page-node-id="FF7ppuKlVMzlWGWMhSEeEj">查不到就写「未获取到」，冲突就并列两个来源——严禁编造、严禁静默取舍。</p>
+      </div>
+      <div class="card c3 hook nb" data-page-node-id="dEVyyl1N4yXnFCoan9SIS7">
+        <h3 data-page-node-id="mwGtPI9ziGyc8CV6GIx1cZ">韧性设计</h3>
+        <p data-page-node-id="ktDcRJeWnodLe0YQaRdNKe">主机熔断、超时重试、失败原因回灌、上下文自动压缩，长任务不烧穿预算也能交付"诚实的不完整报告"。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 目标轨道 ================= -->
+<section id="tracks" class="pegboard" style="position:relative" data-page-node-id="HqCk1DKnLHVMxxImIufBH9">
+  <div class="wrap" data-page-node-id="LmaiIeW8X5AT2Di16lTU3a">
+    <span class="eyebrow e-blue" data-page-node-id="cTgjq1lSiUWJovzwySv8rR">场景</span>
+    <h2 data-page-node-id="RSI0Svtwjtv752wgLOeMgg">一份配置，<span class="hl" data-page-node-id="4xY9B9vYDRatEfkuddxw3S">换一个目标轨道</span></h2>
+    <p class="lead" data-page-node-id="cZeNJENWuCWqS7CGcC1emF">
+      考研、考公、求职已是内置轨道。轨道只是<b data-page-node-id="7NMlbjzfGOiFYvodbIADsW">一份配置文件</b>（场景提示 + 输出字段 + 时间节点），
+      不是代码分支——加一个"留学"轨道零代码。
+    </p>
+    <div class="shots-3" data-page-node-id="bx9BLQY8ICPosDkNbw5NAF">
+      <figure class="hook nb" data-page-node-id="AFlf1qhHCzDpB5qJERrCo5">
+        <img src="images/ui-report.png" alt="调研报告的来源清单" data-page-node-id="okjugN2TgmYPZ8W7sTlf67">
+        <figcaption data-page-node-id="YCk8CCagdEzfuYTt2sSBMZ"><b data-page-node-id="GvQdlYnYcvjv87ZHmCZUeR">每格数据带来源。</b>18 条来源按官方 → 权威媒体 → 第三方汇总分级，全部可点击核验。</figcaption>
+      </figure>
+      <figure class="hook nb" data-page-node-id="1qSdzGxfE9dfXwZz5LBzWq">
+        <img src="images/ui-planning-tab.png" alt="目标轨道与关键节点倒计时" data-page-node-id="yhe3bntQIucE3BqTcWdZIO">
+        <figcaption data-page-node-id="CAp5b41ftzxwM1kV2EQCPT"><b data-page-node-id="aNbZa1uiMbZhbcy8Tw3z4g">节点自动排布。</b>建立考研轨道后自动生成关键节点与倒计时，临近主动提醒；调研过程同样透明——AI 先拆解再多路并行检索，每路显示命中数与来源。</figcaption>
+      </figure>
+    </div>
+
+    <div class="mini-cards" data-page-node-id="0C0jJkuIGOvZgdQJl57sj0">
+      <div class="card c1 hook nb" data-page-node-id="B7usc1beor9Ba23pUQQVe3">
+        <h3 data-page-node-id="EPtVJYEY5vFoaS9eU2V0qK">考研</h3>
+        <p data-page-node-id="ZUxEgS8AgeehDZlR6lXzGC">四校对比报告、科目代码差异解读、推免占比风险、近三年分数线波动——3 分钟出结果。</p>
+      </div>
+      <div class="card c2 hook nb" data-page-node-id="YcOJr6d9v260EnI3CnsCCl">
+        <h3 data-page-node-id="PFFNi27sihfcI2yINnRKDG">考公 / 考编</h3>
+        <p data-page-node-id="Z8edvkM5zGHY6X0mz3rwPE">常识与申论资料整理、时政跟踪，资料精读后自动出题巩固。</p>
+      </div>
+      <div class="card c3 hook nb" data-page-node-id="YhwytfDgq2XE9zqdl244vb">
+        <h3 data-page-node-id="bbg6Dxh9fOfC56x9aW2Lbu">求职</h3>
+        <p data-page-node-id="xkeXn0SJsonS5E1kpVEDWu">JD 与自身经历对比调研，差距清单自动整理成"面试速查卡"入库。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 下载 ================= -->
+<section id="download" class="sec-white" data-page-node-id="eTRNXTJU8CLgXSilccph5W">
+  <div class="wrap" data-page-node-id="zm42vaJ07XIInE6nYVKCWi">
+    <span class="eyebrow e-black" data-page-node-id="1hC8GqoWJqVwMd0gL64shH">获取</span>
+    <h2 data-page-node-id="d7vZUJrU22srmjTI5diIuc">下载<span class="hl" data-page-node-id="fhA5AlaEKglOgpAxLUYTVE">词元新学</span></h2>
+
+    <div class="dl-box nb" data-page-node-id="ujel89qGF0M7S40szZEmK8">
+      <span class="sticker corner-stk" data-page-node-id="2CgEb8hSdD0QtJsVVHcdCB">单文件 exe</span>
+      <h3 data-page-node-id="JOFCED8gv5bb3PqILw8Trk">Windows 版（x64）</h3>
+      <p class="meta" data-page-node-id="mJrVtFqgNmRoXQWmiInzS5">无需解压无需安装 · 首次运行需配置模型 API Key · 数据不出本机</p>
+      <div style="display:flex;gap:16px;justify-content:center;margin-top:24px;flex-wrap:wrap" data-page-node-id="3CmtLcf5TrhznhBTKqRTOg">
+        <a class="nb-btn nb-yellow" href="download/AgentAssistant.exe" download data-page-node-id="rOg6Auw6IZTdP6FsXRmo9e">&#8595; 下载客户端（74 MB 单文件）</a>
+        <a class="nb-btn nb-black" href="https://github.com/" target="_blank" rel="noopener" data-page-node-id="VHBwXQDLMBuE2a4tpsAZpz">查看源码</a>
+      </div>
+      <p class="pending" id="dlstate" data-page-node-id="cKLc5FTNf6Qb4vfoNSKpFt">构建完成（2026-09-15）：单文件 exe 73.6 MB，已在本机实测启动通过。首次启动会自解压运行时，稍慢几秒属正常。</p>
+
+      <div style="max-width:680px;margin:22px auto 0;text-align:left;background:#FFF7E0;border:2px solid var(--ink);border-radius:12px;padding:14px 18px;font-size:13.5px">
+        <b style="color:var(--orange)">&#9888; 浏览器提示「通常不会下载」甚至「检测到病毒」？</b>
+        这是 Windows 对<b>未签名程序</b>的启发式误报——本程序由 PyInstaller 打包，Defender 判定为 Program:…<b>!ml</b>（机器学习猜测，并非特征码命中的真实病毒），源码完全开源可查。
+        <br><b>恢复方法：</b>打开 <b>Windows 安全中心 → 病毒和威胁防护 → 保护历史记录</b>，找到对应条目选择 <b>允许在设备上 / 还原</b>；浏览器提示「通常不会下载」时，点 <b>&#8943;</b> → <b>保留</b> → <b>仍然保留</b>。
+        <div style="margin-top:8px;font-family:Consolas,monospace;font-size:12px;word-break:break-all;color:#5a4a00">
+          SHA256 校验值（可用 <b>certutil -hashfile AgentAssistant.exe SHA256</b> 自查）：<br>99a19d95e58233c391223192a2e19fc0f25f5cb1024aa7fa4734fff26901c211
+        </div>
+      </div>
+    </div>
+
+    <div class="req" data-page-node-id="ZC9dERbl5oji0Vo58QpgFp">
+      <div class="rq hook nb" data-page-node-id="vCbT1xkWVCM9WFMEmngera">
+        <h4 data-page-node-id="NKwNI5XgAZ2oOOwvHvznyS">系统要求</h4>
+        <ul data-page-node-id="CSndK8vVRuKSRf1qIBYzdB">
+          <li data-page-node-id="EoXrOrQWrJl41pF9MuVMGb">Windows 10 1809 或更高版本（x64）</li>
+          <li data-page-node-id="DpNeaOqfrCrcFY4QhvQzZM">内存 8 GB 以上（推荐 16 GB）</li>
+          <li data-page-node-id="cKJd2vKKIZ0IZGsOXdAln7">可用磁盘空间 1 GB 以上</li>
+          <li data-page-node-id="rLond2yZQHWW0fG3o5kTgG">需要联网调用大模型 API（可自行配置多家厂商）</li>
+        </ul>
+      </div>
+      <div class="rq hook nb" data-page-node-id="z8xSuGJMStKR8uRUKpazzp">
+        <h4 data-page-node-id="Wy3vEXg1U2nFmbnqjdxqoz">安装步骤</h4>
+        <ul data-page-node-id="my6yTBWGGFbaGiIquBsHq1">
+          <li data-page-node-id="vDmtopYJCkL3tpWJlXInFA">下载 AgentAssistant.exe 到任意目录（无需解压）</li>
+          <li data-page-node-id="vDmtopYJCkL3tpWJlXInFB">双击启动，首次稍慢（自解压运行时）</li>
+          <li data-page-node-id="vDmtopYJCkL3tpWJlXInFD">需要桌面图标：右键 exe → 发送到 → 桌面快捷方式（Win11 需先点「显示更多选项」）</li>
+          <li data-page-node-id="c0lRX5bh4xw2RbLyyhr4pS">不填 API Key 也能打开浏览；聊天等用到模型时，会提示前往「设置 → 模型配置」填写</li>
+          <li data-page-node-id="JX9HhAOCq6twaqLtZpHMTY">（可选）在文件右键菜单中启用「Learn with Assistant」</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer data-page-node-id="GPeHPGB1CTRLZZ8WJxGRE1">
+  <div class="wrap fgrid" data-page-node-id="hw9sWW8qfCW1we68ddyCY2">
+    <div data-page-node-id="ehC0jEHYV4yd1EawqYjDJs">
+      <div class="fbrand" data-page-node-id="QuTJMzyBHdbcVjyxqWanPm"><img src="images/logo-mark.png" alt="" style="height:28px;display:block">词元新学 AgentAssistant</div>
+      <p style="margin-top:10px" data-page-node-id="52f3OQXuECEu6RknV15AdG">由三名在校本科生从真实学习困境出发独立完成。</p>
+    </div>
+    <div data-page-node-id="njiAV5kqdpibC434RPK7JW">
+      <b data-page-node-id="YhyZHGfrgiFdI9OVbjUlr2">技术栈</b><br data-page-node-id="SALBoXBNWbTeqpgEb4v5ss">
+      Python · React/TypeScript · pywebview · SQLite · 本地向量库
+    </div>
+    <div data-page-node-id="NjqDmC5FN7Tj7AQ9SeyLi3">
+      <b data-page-node-id="Whhc4TVu6ikNyQdh854HjY">说明</b><br data-page-node-id="B9LTiBftl0LqEcRFsGTWdM">
+      页面数据截止 2026-09-12，界面截图均为真实运行画面。
+    </div>
+  </div>
+</footer>
+
+</body>
+
+</html>
